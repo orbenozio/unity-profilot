@@ -17,7 +17,10 @@ function print(obj) {
 // Resolve Library/Profilot/events: explicit env wins, else walk up from cwd to the project.
 function findEventsDir() {
   if (process.env.PROFILOT_PROJECT) {
-    return path.join(process.env.PROFILOT_PROJECT, 'Library', 'Profilot', 'events');
+    // Explicit project root: return the store only if it exists, so a project that has not
+    // captured anything yet reports no_data instead of crashing on a missing directory.
+    const candidate = path.join(process.env.PROFILOT_PROJECT, 'Library', 'Profilot', 'events');
+    return fs.existsSync(candidate) ? candidate : null;
   }
   let dir = process.cwd();
   for (;;) {
