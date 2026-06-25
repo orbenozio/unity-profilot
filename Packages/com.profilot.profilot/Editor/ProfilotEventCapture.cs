@@ -43,6 +43,17 @@ namespace Profilot.Editor
 
         private static readonly Dictionary<string, Accumulator> Dedup = new Dictionary<string, Accumulator>();
 
+        // reviewStatus set by the user from the window. Remembered so that an ongoing spike
+        // of the same problem does not reset it back to "open" when the record is overwritten.
+        private static readonly Dictionary<string, string> Reviewed = new Dictionary<string, string>();
+
+        /// <summary>Called by the window when the user marks an event (SPEC.md JTBD-8).</summary>
+        internal static void MarkReviewed(string eventId, string status)
+        {
+            Reviewed[eventId] = status;
+            ProfilotEventStore.SetReviewStatus(eventId, status);
+        }
+
         static ProfilotEventCapture()
         {
             EditorApplication.update += OnUpdate;
@@ -63,6 +74,7 @@ namespace Profilot.Editor
 
             ProfilotTripChannel.Clear();
             Dedup.Clear();
+            Reviewed.Clear();
         }
 
         private static void OnUpdate()
@@ -217,13 +229,14 @@ namespace Profilot.Editor
             in TripSignal signal, string status, string markerTreeJson, string topMarkersJson, Accumulator acc)
         {
             string severity = Severity(signal.Value, signal.Budget);
+            string review = Reviewed.TryGetValue(eventId, out string r) ? r : "open";
 
             var sb = new StringBuilder(1024);
             sb.Append('{');
             sb.Append("\"schemaVersion\":").Append(Json.Str(SchemaVersion));
             sb.Append(",\"eventId\":").Append(Json.Str(eventId));
             sb.Append(",\"status\":").Append(Json.Str(status));
-            sb.Append(",\"reviewStatus\":").Append(Json.Str("open"));
+            sb.Append(",\"reviewStatus\":").Append(Json.Str(review));
             sb.Append(",\"stale\":false");
             sb.Append(",\"capturedAt\":").Append(Json.Str(DateTime.UtcNow.ToString("o")));
             sb.Append(",\"sessionId\":").Append(Json.Str(_sessionId));

@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text.RegularExpressions;
 
 namespace Profilot.Editor
 {
@@ -38,6 +39,22 @@ namespace Profilot.Editor
             Directory.CreateDirectory(Root);
             WriteAtomic(EventPath(eventId), eventJson);
             WriteAtomic(LatestPath, latestPointerJson);
+        }
+
+        /// <summary>
+        /// Rewrites only the reviewStatus field of an existing event file (the user marking
+        /// it from the window, SPEC.md JTBD-8 / decision 2). A targeted replace so the rest
+        /// of the record - markerTree and all - is preserved without re-serializing it.
+        /// </summary>
+        public static void SetReviewStatus(string eventId, string status)
+        {
+            string path = EventPath(eventId);
+            if (!File.Exists(path))
+                return;
+
+            string json = File.ReadAllText(path);
+            json = Regex.Replace(json, "\"reviewStatus\":\"[a-z_]+\"", $"\"reviewStatus\":\"{status}\"");
+            WriteAtomic(path, json);
         }
 
         private static void WriteAtomic(string path, string content)

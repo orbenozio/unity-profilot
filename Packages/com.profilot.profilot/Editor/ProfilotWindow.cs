@@ -146,12 +146,31 @@ namespace Profilot.Editor
                 EditorGUIUtility.systemCopyBuffer = $"profilot diagnose --id {e.eventId}";
                 ShowNotification(new GUIContent("Copied - paste into Claude Code"));
             }
-            using (new EditorGUI.DisabledScope(true))
-                GUILayout.Label(e.reviewStatus == "open" ? "open" : e.reviewStatus, EditorStyles.miniLabel, GUILayout.Width(70));
+
+            bool reviewed = e.reviewStatus == "reviewed" || e.reviewStatus == "not_a_real_issue";
+            using (new EditorGUI.DisabledScope(reviewed))
+            {
+                if (GUILayout.Button("Reviewed", GUILayout.Height(22), GUILayout.Width(80)))
+                    Mark(e.eventId, "reviewed");
+                if (GUILayout.Button("Not an issue", GUILayout.Height(22), GUILayout.Width(90)))
+                    Mark(e.eventId, "not_a_real_issue");
+            }
             EditorGUILayout.EndHorizontal();
+
+            if (reviewed)
+                EditorGUILayout.LabelField($"marked: {e.reviewStatus}", EditorStyles.miniLabel);
 
             EditorGUILayout.EndVertical();
             EditorGUILayout.Space(2);
+        }
+
+        private void Mark(string eventId, string status)
+        {
+            // The editor owns the store write; the CLI stays read-only (SPEC.md decision 2).
+            // Routed through the capture service so an ongoing spike keeps the status instead
+            // of resetting it to "open" on the next overwrite.
+            ProfilotEventCapture.MarkReviewed(eventId, status);
+            Repaint();
         }
 
         private static Color SeverityColor(string severity)
