@@ -35,10 +35,12 @@ namespace Profilot
         // allocation would re-fire gc_spike every single frame.
         public double CooldownSeconds = 2.0;
 
-        // Ignore the first moments after entering Play Mode: scene init / first-frame work
-        // always blows the frame budget and would fire a meaningless startup hitch
-        // (false positive, hurts SPEC.md M4). Counters still warm during this window.
-        public double WarmupSeconds = 1.0;
+        // Ignore the first frames after entering Play Mode: scene init and first-time JIT
+        // compilation always blow the frame budget and would fire a meaningless startup
+        // hitch (false positive, hurts SPEC.md M4). Counted in frames, not seconds, on
+        // purpose - during the JIT storm a single frame can take hundreds of ms, so a
+        // wall-clock warmup expires mid-storm. Counters still warm during this window.
+        public int WarmupFrames = 60;
 
         // Convenience for development; the real surface is the event store, not the Console.
         public bool LogToConsole = true;
@@ -47,7 +49,7 @@ namespace Profilot
         private ProfilerRecorder _gcAllocated;         // bytes
         private ProfilerRecorder _drawCalls;           // count
 
-        private double _enabledAt;
+        private int _enabledFrame;
         private double _drawCallsBaseline;
         private bool _baselineWarm;
 
@@ -82,7 +84,7 @@ namespace Profilot
                 _suppressedSinceReport[i] = 0;
             }
 
-            _enabledAt = Time.unscaledTimeAsDouble;
+            _enabledFrame = Time.frameCount;
 
             // Recorders are allocated once here, never in the per-frame path.
             _mainThreadTime = ProfilerRecorder.StartNew(ProfilerCategory.Internal, "Main Thread", 1);
@@ -108,8 +110,8 @@ namespace Profilot
 
             UpdateDrawCallsBaseline(_draws);
 
-            // Let the first moments after Play settle before flagging anything.
-            if (Time.unscaledTimeAsDouble - _enabledAt < WarmupSeconds)
+            // Let the first frames after Play settle (scene init + JIT) before flagging.
+            if (Time.frameCount - _enabledFrame < WarmupFrames)
                 return;
 
             // First match wins; a full multi-event model per frame comes later.

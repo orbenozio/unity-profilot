@@ -21,6 +21,13 @@ namespace Profilot.Editor
     {
         private const string SchemaVersion = "1";
 
+        // How many recent profiler frames to scan when correlating a trip to its frame.
+        // ProfilerDriver counts editor frames too, so its lastFrameIndex is not the frame
+        // that tripped; we drain on the next editor update, so the real frame is only a few
+        // back. We pick by signal (the frame whose GC alloc / time matches the trigger),
+        // not by index, which is robust to that offset (SPEC.md section 15, ring buffer).
+        private const int FrameSearchWindow = 30;
+
         private static readonly List<TripSignal> Buffer = new List<TripSignal>();
         private static string _sessionId = "editor";
 
@@ -60,13 +67,14 @@ namespace Profilot.Editor
 
         private static void Capture(in TripSignal signal)
         {
-            int frameIndex = ProfilerDriver.lastFrameIndex;
+            int requestedFrameIndex = ProfilerDriver.lastFrameIndex;
+            int frameIndex = PickBestFrame(signal, requestedFrameIndex);
             string eventId = $"evt_{frameIndex}_{signal.Type}";
 
             string json;
             try
             {
-                json = BuildEventJson(eventId, frameIndex, signal);
+                json = BuildEventJson(eventId, frameIndex, requestedFrameIndex, signal);
             }
             catch (Exception e)
             {
@@ -77,7 +85,53 @@ namespace Profilot.Editor
             ProfilotEventStore.Write(eventId, json, BuildLatestPointer(eventId));
         }
 
-        private static string BuildEventJson(string eventId, int frameIndex, in TripSignal signal)
+        /// <summary>
+        /// Finds the frame that actually carries the anomaly. Scans recent profiler frames
+        /// and picks the one whose signal is strongest: GC allocation for gc_spike, frame
+        /// time otherwise. This correlates the runtime trip to the right profiler frame
+        /// despite the editor/player frame-index offset, so the offending marker is in the
+        /// captured tree rather than a later idle frame.
+        /// </summary>
+        private static int PickBestFrame(in TripSignal signal, int latest)
+        {
+            if (latest < 0)
+                return latest;
+
+            bool byAlloc = signal.Type == "gc_spike";
+            int first = ProfilerDriver.firstFrameIndex;
+            int from = Mathf.Max(first, latest - FrameSearchWindow);
+
+            int best = latest;
+            double bestScore = double.NegativeInfinity;
+            for (int f = latest; f >= from; f--)
+            {
+                HierarchyFrameDataView view = ProfilerDriver.GetHierarchyFrameDataView(
+                    f, 0, HierarchyFrameDataView.ViewModes.MergeSamplesWithTheSameName,
+                    HierarchyFrameDataView.columnTotalTime, false);
+                try
+                {
+                    if (view == null || !view.valid)
+                        continue;
+
+                    double score = byAlloc
+                        ? view.GetItemColumnDataAsFloat(view.GetRootItemID(), HierarchyFrameDataView.columnGcMemory)
+                        : view.frameTimeMs;
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        best = f;
+                    }
+                }
+                finally
+                {
+                    view?.Dispose();
+                }
+            }
+
+            return best;
+        }
+
+        private static string BuildEventJson(string eventId, int frameIndex, int requestedFrameIndex, in TripSignal signal)
         {
             string markerTreeJson = "null";
             string topMarkersJson = "[]";
@@ -124,8 +178,8 @@ namespace Profilot.Editor
             sb.Append(",\"sessionId\":").Append(Json.Str(_sessionId));
             sb.Append(",\"unityVersion\":").Append(Json.Str(Application.unityVersion));
             sb.Append(",\"frameIndex\":").Append(Json.Num(frameIndex));
-            sb.Append(",\"requestedFrameIndex\":").Append(Json.Num(frameIndex));
-            sb.Append(",\"frameIndexDelta\":0");
+            sb.Append(",\"requestedFrameIndex\":").Append(Json.Num(requestedFrameIndex));
+            sb.Append(",\"frameIndexDelta\":").Append(Json.Num(requestedFrameIndex - frameIndex));
 
             sb.Append(",\"trigger\":{");
             sb.Append("\"type\":").Append(Json.Str(signal.Type));
