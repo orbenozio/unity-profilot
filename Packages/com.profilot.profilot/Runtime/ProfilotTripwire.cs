@@ -4,10 +4,11 @@ using UnityEngine;
 namespace Profilot
 {
     /// <summary>
-    /// Phase 1 (SPEC.md section 17). The low-overhead live tripwire: samples a few cheap
+    /// Phase 1 + 2 (SPEC.md section 17). The low-overhead live tripwire: samples a few cheap
     /// counters every frame through ProfilerRecorder and flags anomalies against a budget.
-    /// There is no LLM call and no full-frame capture here - capturing the problem frame
-    /// (ProfilerDriver, Editor side) and writing an event record is Phase 2.
+    /// On a trip it publishes a <see cref="TripSignal"/> to <see cref="ProfilotTripChannel"/>;
+    /// the editor capture service then fetches the full problem frame and writes an event
+    /// record. There is no LLM call here.
     ///
     /// Counters are only meaningful in the Editor and in development builds; in release
     /// players most markers are stripped (SPEC.md NG3), so the tripwire does not boot there.
@@ -20,24 +21,27 @@ namespace Profilot
         private const int TripKindCount = 3;
 
         // Spec trigger.type strings (SPEC.md section 14), indexed by TripKind.
-        private static readonly string[] TripLabels = { "frame_hitch", "gc_spike", "draw_calls" };
+        private static readonly string[] TripTypes = { "frame_hitch", "gc_spike", "draw_calls" };
+        private static readonly string[] TripMetrics = { "frameTimeMs", "gcAllocBytes", "drawCalls" };
 
         // Placeholder budget defaults (SPEC.md decision 5; calibrated in Phase 3).
         public double FrameBudgetMs = 16.6;            // 60 fps
         public long GcAllocBudgetBytes = 0;            // any in-frame allocation is a candidate
         public float DrawCallsBaselineMultiplier = 1.5f;
 
-        // Minimal anti-spam: a trigger type is reported at most once per cooldown window;
-        // repeats inside the window are counted and folded into the next report ("+N more").
-        // This is the Phase 1 stand-in for the full dedup / rate-limit / event-store model
-        // in SPEC.md section 15 (Phase 2). Without it the Editor's constant baseline
-        // allocation re-fires gc_spike every single frame.
+        // A trigger type emits at most one signal per cooldown window; repeats inside the
+        // window are counted and folded into the next signal as dedup.count (SPEC.md
+        // section 15 rate-limit / dedup). Without it the Editor's constant baseline
+        // allocation would re-fire gc_spike every single frame.
         public double CooldownSeconds = 2.0;
 
         // Ignore the first moments after entering Play Mode: scene init / first-frame work
         // always blows the frame budget and would fire a meaningless startup hitch
         // (false positive, hurts SPEC.md M4). Counters still warm during this window.
         public double WarmupSeconds = 1.0;
+
+        // Convenience for development; the real surface is the event store, not the Console.
+        public bool LogToConsole = true;
 
         private ProfilerRecorder _mainThreadTime;      // nanoseconds
         private ProfilerRecorder _gcAllocated;         // bytes
@@ -49,6 +53,11 @@ namespace Profilot
 
         private readonly double[] _lastReportTime = new double[TripKindCount];
         private readonly int[] _suppressedSinceReport = new int[TripKindCount];
+
+        // Last per-frame snapshot, so a trip can carry the full counter set.
+        private double _frameMs;
+        private long _gcBytes;
+        private double _draws;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
@@ -93,23 +102,23 @@ namespace Profilot
             // Read last sampled values only. A counter that is not available on this
             // Unity version / platform reports Valid == false and is simply skipped
             // (SPEC.md section 14: GetAvailable / Valid before reading).
-            double frameMs = _mainThreadTime.Valid ? _mainThreadTime.LastValue * 1e-6 : 0.0; // ns -> ms
-            long gcBytes = _gcAllocated.Valid ? _gcAllocated.LastValue : 0L;
-            double draws = _drawCalls.Valid ? _drawCalls.LastValue : 0.0;
+            _frameMs = _mainThreadTime.Valid ? _mainThreadTime.LastValue * 1e-6 : 0.0; // ns -> ms
+            _gcBytes = _gcAllocated.Valid ? _gcAllocated.LastValue : 0L;
+            _draws = _drawCalls.Valid ? _drawCalls.LastValue : 0.0;
 
-            UpdateDrawCallsBaseline(draws);
+            UpdateDrawCallsBaseline(_draws);
 
             // Let the first moments after Play settle before flagging anything.
             if (Time.unscaledTimeAsDouble - _enabledAt < WarmupSeconds)
                 return;
 
-            // First match wins; a full multi-event model per frame comes in Phase 2.
-            if (_mainThreadTime.Valid && frameMs > FrameBudgetMs)
-                OnTrip(TripKind.FrameHitch, "frameTimeMs", frameMs, FrameBudgetMs);
-            else if (_gcAllocated.Valid && gcBytes > GcAllocBudgetBytes)
-                OnTrip(TripKind.GcSpike, "gcAllocBytes", gcBytes, GcAllocBudgetBytes);
-            else if (_baselineWarm && _drawCalls.Valid && draws > _drawCallsBaseline * DrawCallsBaselineMultiplier)
-                OnTrip(TripKind.DrawCalls, "drawCalls", draws, _drawCallsBaseline * DrawCallsBaselineMultiplier);
+            // First match wins; a full multi-event model per frame comes later.
+            if (_mainThreadTime.Valid && _frameMs > FrameBudgetMs)
+                OnTrip(TripKind.FrameHitch, _frameMs, FrameBudgetMs);
+            else if (_gcAllocated.Valid && _gcBytes > GcAllocBudgetBytes)
+                OnTrip(TripKind.GcSpike, _gcBytes, GcAllocBudgetBytes);
+            else if (_baselineWarm && _drawCalls.Valid && _draws > _drawCallsBaseline * DrawCallsBaselineMultiplier)
+                OnTrip(TripKind.DrawCalls, _draws, _drawCallsBaseline * DrawCallsBaselineMultiplier);
         }
 
         private void UpdateDrawCallsBaseline(double draws)
@@ -127,12 +136,12 @@ namespace Profilot
             _drawCallsBaseline = (1.0 - alpha) * _drawCallsBaseline + alpha * draws;
         }
 
-        private void OnTrip(TripKind kind, string metric, double value, double budget)
+        private void OnTrip(TripKind kind, double value, double budget)
         {
             int i = (int)kind;
 
             // Inside the cooldown window: count the repeat, stay silent (this also keeps the
-            // tool from generating its own GC by logging every frame).
+            // tool from generating its own GC by emitting every frame).
             double now = Time.unscaledTimeAsDouble;
             if (now - _lastReportTime[i] < CooldownSeconds)
             {
@@ -144,11 +153,16 @@ namespace Profilot
             _suppressedSinceReport[i] = 0;
             _lastReportTime[i] = now;
 
-            // Phase 1 surfaces the trip to the Console only. Phase 2 will hand the frame
-            // index to the Editor layer, which fetches the full frame and writes an event
-            // record to the store for the CLI to expose to Claude Code.
-            string repeatNote = repeats > 0 ? $" (+{repeats} more in the last {CooldownSeconds:F0}s)" : string.Empty;
-            Debug.LogWarning($"[Profilot] {TripLabels[i]} caught - {metric} {value:F2} (budget {budget:F2}) at frame {Time.frameCount}{repeatNote}.");
+            var signal = new TripSignal(
+                TripTypes[i], TripMetrics[i], value, budget, Time.frameCount, repeats,
+                _frameMs, _gcBytes, _draws);
+            ProfilotTripChannel.Publish(signal);
+
+            if (LogToConsole)
+            {
+                string repeatNote = repeats > 0 ? $" (+{repeats} more in the last {CooldownSeconds:F0}s)" : string.Empty;
+                Debug.LogWarning($"[Profilot] {TripTypes[i]} caught - {TripMetrics[i]} {value:F2} (budget {budget:F2}) at frame {Time.frameCount}{repeatNote}.");
+            }
         }
     }
 }

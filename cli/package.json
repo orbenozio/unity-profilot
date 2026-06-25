@@ -1,0 +1,20 @@
+{
+  "name": "profilot",
+  "version": "0.0.1",
+  "description": "CLI for Profilot - exposes captured Unity Profiler events to Claude Code as structured JSON.",
+  "bin": {
+    "profilot": "index.js"
+  },
+  "type": "commonjs",
+  "engines": {
+    "node": ">=16"
+  },
+  "keywords": [
+    "unity",
+    "profiler",
+    "performance",
+    "claude"
+  ],
+  "author": "Or Benozio",
+  "license": "MIT"
+}
