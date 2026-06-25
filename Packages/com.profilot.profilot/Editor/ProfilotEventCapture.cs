@@ -31,6 +31,18 @@ namespace Profilot.Editor
         private static readonly List<TripSignal> Buffer = new List<TripSignal>();
         private static string _sessionId = "editor";
 
+        // Session dedup (SPEC.md section 15): repeats of the same problem (type + dominant
+        // marker) fold into one rolling record with a growing count, instead of one file per
+        // frame. Kept in memory so we never have to parse the JSON back; the file is just
+        // overwritten with the running total. Reset each time Play Mode is entered.
+        private sealed class Accumulator
+        {
+            public int Count;
+            public int FirstSeenFrame;
+        }
+
+        private static readonly Dictionary<string, Accumulator> Dedup = new Dictionary<string, Accumulator>();
+
         static ProfilotEventCapture()
         {
             EditorApplication.update += OnUpdate;
@@ -50,6 +62,7 @@ namespace Profilot.Editor
             Profiler.enabled = true;
 
             ProfilotTripChannel.Clear();
+            Dedup.Clear();
         }
 
         private static void OnUpdate()
@@ -69,12 +82,52 @@ namespace Profilot.Editor
         {
             int requestedFrameIndex = ProfilerDriver.lastFrameIndex;
             int frameIndex = PickBestFrame(signal, requestedFrameIndex);
-            string eventId = $"evt_{frameIndex}_{signal.Type}";
+
+            // Fetch + normalize first: the dominant marker is part of the dedup key.
+            string markerTreeJson = "null";
+            string topMarkersJson = "[]";
+            string dominantMarker = string.Empty;
+            string status = "ok";
+
+            HierarchyFrameDataView view = frameIndex >= 0
+                ? ProfilerDriver.GetHierarchyFrameDataView(frameIndex, 0,
+                    HierarchyFrameDataView.ViewModes.MergeSamplesWithTheSameName,
+                    HierarchyFrameDataView.columnTotalTime, false)
+                : null;
+            try
+            {
+                if (view != null && view.valid)
+                {
+                    MarkerTreeNormalizer.Build(view, signal.Type == "gc_spike",
+                        out markerTreeJson, out topMarkersJson, out dominantMarker, out _);
+                }
+                else
+                {
+                    // The frame was pushed out of the profiler ring buffer before we could
+                    // read it (SPEC.md section 15). The counter snapshot still describes it.
+                    status = "error";
+                }
+            }
+            finally
+            {
+                view?.Dispose();
+            }
+
+            // Stable id per problem (type + dominant marker) so repeats overwrite one file.
+            string eventId = $"evt_{signal.Type}_{Slug(dominantMarker)}";
+
+            if (!Dedup.TryGetValue(eventId, out Accumulator acc))
+            {
+                acc = new Accumulator { Count = 0, FirstSeenFrame = signal.FrameCount };
+                Dedup[eventId] = acc;
+            }
+            acc.Count += signal.RepeatCount + 1;
 
             string json;
             try
             {
-                json = BuildEventJson(eventId, frameIndex, requestedFrameIndex, signal);
+                json = BuildEventJson(eventId, frameIndex, requestedFrameIndex, signal, status,
+                    markerTreeJson, topMarkersJson, acc);
             }
             catch (Exception e)
             {
@@ -83,6 +136,35 @@ namespace Profilot.Editor
             }
 
             ProfilotEventStore.Write(eventId, json, BuildLatestPointer(eventId));
+        }
+
+        /// <summary>
+        /// Filename-safe key from the dominant marker: drops the assembly prefix and the
+        /// "() [Invoke]" decoration, keeps the method-ish tail, so the dedup id is stable
+        /// and readable (e.g. "GarbageGenerator.Update").
+        /// </summary>
+        private static string Slug(string marker)
+        {
+            if (string.IsNullOrEmpty(marker))
+                return "unknown";
+
+            string s = marker.Replace("() [Invoke]", string.Empty).Replace("[Invoke]", string.Empty).Replace("()", string.Empty);
+            int bang = s.LastIndexOf('!');
+            if (bang >= 0) s = s.Substring(bang + 1);
+            int colons = s.LastIndexOf("::", StringComparison.Ordinal);
+            if (colons >= 0) s = s.Substring(colons + 2);
+
+            var sb = new StringBuilder(s.Length);
+            foreach (char c in s)
+            {
+                if (char.IsLetterOrDigit(c) || c == '.' || c == '_')
+                    sb.Append(c);
+                else if (sb.Length > 0 && sb[sb.Length - 1] != '_')
+                    sb.Append('_');
+            }
+
+            string slug = sb.ToString().Trim('_', '.');
+            return slug.Length > 0 ? slug : "unknown";
         }
 
         /// <summary>
@@ -131,41 +213,10 @@ namespace Profilot.Editor
             return best;
         }
 
-        private static string BuildEventJson(string eventId, int frameIndex, int requestedFrameIndex, in TripSignal signal)
+        private static string BuildEventJson(string eventId, int frameIndex, int requestedFrameIndex,
+            in TripSignal signal, string status, string markerTreeJson, string topMarkersJson, Accumulator acc)
         {
-            string markerTreeJson = "null";
-            string topMarkersJson = "[]";
-            string status = "ok";
-
-            HierarchyFrameDataView view = null;
-            if (frameIndex >= 0)
-            {
-                view = ProfilerDriver.GetHierarchyFrameDataView(
-                    frameIndex, 0,
-                    HierarchyFrameDataView.ViewModes.MergeSamplesWithTheSameName,
-                    HierarchyFrameDataView.columnTotalTime, false);
-            }
-
-            try
-            {
-                if (view != null && view.valid)
-                {
-                    MarkerTreeNormalizer.Build(view, signal.Type == "gc_spike", out markerTreeJson, out topMarkersJson, out _);
-                }
-                else
-                {
-                    // The frame was pushed out of the profiler ring buffer before we could
-                    // read it (SPEC.md section 15). The counter snapshot still describes it.
-                    status = "error";
-                }
-            }
-            finally
-            {
-                view?.Dispose();
-            }
-
             string severity = Severity(signal.Value, signal.Budget);
-            int count = signal.RepeatCount + 1;
 
             var sb = new StringBuilder(1024);
             sb.Append('{');
@@ -199,8 +250,8 @@ namespace Profilot.Editor
             sb.Append(",\"topMarkers\":").Append(topMarkersJson);
 
             sb.Append(",\"dedup\":{");
-            sb.Append("\"count\":").Append(Json.Num(count));
-            sb.Append(",\"firstSeenFrame\":").Append(Json.Num(signal.FrameCount));
+            sb.Append("\"count\":").Append(Json.Num(acc.Count));
+            sb.Append(",\"firstSeenFrame\":").Append(Json.Num(acc.FirstSeenFrame));
             sb.Append(",\"lastSeenFrame\":").Append(Json.Num(signal.FrameCount));
             sb.Append('}');
 

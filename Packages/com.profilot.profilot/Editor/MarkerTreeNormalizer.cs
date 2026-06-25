@@ -30,7 +30,7 @@ namespace Profilot.Editor
         }
 
         public static void Build(HierarchyFrameDataView view, bool rankByAlloc, out string markerTreeJson,
-            out string topMarkersJson, out float frameMs)
+            out string topMarkersJson, out string dominantMarker, out float frameMs)
         {
             frameMs = view.frameTimeMs;
             int rootId = view.GetRootItemID();
@@ -47,6 +47,8 @@ namespace Profilot.Editor
                 all.Sort((a, b) => b.GcBytes.CompareTo(a.GcBytes));
             else
                 all.Sort((a, b) => b.SelfMs.CompareTo(a.SelfMs));
+
+            dominantMarker = all.Count > 0 ? all[0].Name : string.Empty;
 
             var top = new StringBuilder();
             top.Append('[');
