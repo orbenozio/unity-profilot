@@ -29,7 +29,7 @@ namespace Profilot.Editor
             public int Calls;
         }
 
-        public static void Build(HierarchyFrameDataView view, out string markerTreeJson,
+        public static void Build(HierarchyFrameDataView view, bool rankByAlloc, out string markerTreeJson,
             out string topMarkersJson, out float frameMs)
         {
             frameMs = view.frameTimeMs;
@@ -39,7 +39,14 @@ namespace Profilot.Editor
 
             var all = new List<Marker>();
             CollectAll(view, startId, all, 0);
-            all.Sort((a, b) => b.SelfMs.CompareTo(a.SelfMs));
+
+            // Rank topMarkers by the trigger's own dimension: a gc_spike is explained by the
+            // marker that allocated (often tiny self time), a hitch by the marker that spent
+            // the time. Sorting both by self time buried the real allocator (SPEC.md phase 3).
+            if (rankByAlloc)
+                all.Sort((a, b) => b.GcBytes.CompareTo(a.GcBytes));
+            else
+                all.Sort((a, b) => b.SelfMs.CompareTo(a.SelfMs));
 
             var top = new StringBuilder();
             top.Append('[');
@@ -87,7 +94,9 @@ namespace Profilot.Editor
         {
             if (string.IsNullOrEmpty(name))
                 return true;
-            if (name.Contains("Profilot"))
+            // Our own assemblies only - must not catch user code in a "Profilot*" namespace
+            // (e.g. the ProfilotDemo sample), which is exactly the code we want to surface.
+            if (name.Contains("Profilot.Runtime") || name.Contains("Profilot.Editor"))
                 return true;
             if (name == "Mono.JIT" || name == "GC.Alloc" || name == "LogStringToConsole")
                 return true;

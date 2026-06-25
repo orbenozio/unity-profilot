@@ -150,7 +150,7 @@ namespace Profilot.Editor
             {
                 if (view != null && view.valid)
                 {
-                    MarkerTreeNormalizer.Build(view, out markerTreeJson, out topMarkersJson, out _);
+                    MarkerTreeNormalizer.Build(view, signal.Type == "gc_spike", out markerTreeJson, out topMarkersJson, out _);
                 }
                 else
                 {
