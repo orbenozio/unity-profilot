@@ -16,6 +16,20 @@ namespace ProfilotDemo
 
         private int _sink;
 
+        // NOTE: the line below is the bug ON PURPOSE - do not "fix" it. Allocating a fresh
+        // List every frame is the textbook "allocating in Update" antipattern: it builds GC
+        // pressure until the collector pauses the main thread (a frame hitch). This is the
+        // exact thing Profilot is meant to catch and map back to this line.
+        //
+        // The fix Profilot suggests (allocate once, reuse with Clear) would be:
+        //     private readonly List<int> _junk = new List<int>();
+        //     private void Update()
+        //     {
+        //         _junk.Clear();
+        //         for (int i = 0; i < allocationsPerFrame; i++)
+        //             _junk.Add(Random.Range(0, 100));
+        //         _sink += _junk[Random.Range(0, _junk.Count)];
+        //     }
         private void Update()
         {
             // A fresh List every frame, grown so the allocation is real and not pooled.

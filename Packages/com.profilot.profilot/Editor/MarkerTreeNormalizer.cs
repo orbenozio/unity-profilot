@@ -76,6 +76,31 @@ namespace Profilot.Editor
             return view.GetItemName(id) == "EditorLoop";
         }
 
+        /// <summary>
+        /// Markers that are noise in topMarkers: not user game code, so they must not crowd
+        /// out the marker Claude needs to map. Calibration from live dogfooding (SPEC.md
+        /// section 17, phase 3): Profilot's own markers, the allocation/JIT machinery, and
+        /// editor-only markers (stripped in a real build anyway, SPEC.md NG3). This filters
+        /// ranking only; the full tree below still keeps these nodes for context.
+        /// </summary>
+        private static bool IsNoiseForTop(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+                return true;
+            if (name.Contains("Profilot"))
+                return true;
+            if (name == "Mono.JIT" || name == "GC.Alloc" || name == "LogStringToConsole")
+                return true;
+            if (name.Contains("StackTraceUtility"))
+                return true;
+            // Editor-only work (EditorLoop, EditorConnection, EditorResources, AssetDatabase,
+            // GUIUtility, ...). Matching "Editor" is broad, but it only affects ranking, and
+            // these markers do not exist in a development build.
+            if (name.Contains("Editor") || name.Contains("AssetDatabase") || name.Contains("GUIUtility"))
+                return true;
+            return false;
+        }
+
         private static Marker Read(HierarchyFrameDataView view, int id)
         {
             return new Marker
@@ -97,7 +122,8 @@ namespace Profilot.Editor
             view.GetItemChildren(id, children);
             foreach (int c in children)
             {
-                if (IsEditorOverhead(view, c))
+                // Skip noise (and its subtree) so topMarkers stays focused on user code.
+                if (IsNoiseForTop(view.GetItemName(c)))
                     continue;
                 acc.Add(Read(view, c));
                 CollectAll(view, c, acc, depth + 1);
