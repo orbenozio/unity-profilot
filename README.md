@@ -39,10 +39,12 @@ and Claude Code does the interpreting.
 See [`SPEC.md`](SPEC.md) section 17. Current state:
 
 - Phase 0 - diagnosis guidance for Claude Code. Done.
-- Phase 0.5 - `ProfilerDriver` frame-dump spike (validates the editor capture API). In this build.
-- Phase 1 - live tripwire skeleton (`ProfilerRecorder`). In this build.
-- Phase 2 - full-frame capture, event store, and the CLI. Next.
-- Phase 3 - calibration (thresholds, marker-tree trimming, mapping accuracy).
+- Phase 0.5 - `ProfilerDriver` frame-dump spike (validated the editor capture API). Done.
+- Phase 1 - live tripwire (`ProfilerRecorder`). Done.
+- Phase 2 - full-frame capture, event store, and the Node CLI. Done, verified live.
+- Phase 3 - calibration (marker-tree trimming, noise filtering, cross-store dedup). In progress.
+- Editor window (`Tools/Profilot/Window`) - live states, caught-issue list, copy-diagnose, and
+  Reviewed / Not-an-issue feedback.
 
 ## Requirements
 

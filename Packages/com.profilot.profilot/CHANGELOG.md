@@ -26,6 +26,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     plus a `latest.json` pointer written last.
   - Node CLI (`cli/`): `diagnose --last`, `diagnose --id`, `list`, `status` - reads the
     store and prints JSON to stdout for Claude Code. Pure transport, no LLM, read-only.
+- Editor window (`Tools/Profilot/Window`): live states (not playing / monitoring / issues
+  caught), a one-line summary per caught problem, a button that copies the exact
+  `profilot diagnose --id <id>` command, and Reviewed / Not-an-issue feedback that writes
+  reviewStatus back to the event (the editor owns the store write; the CLI stays read-only).
+
+### Changed
+- Capture correlates the trip to the right profiler frame (`PickBestFrame`) instead of
+  blindly using `lastFrameIndex`, fixing the editor/player frame-index offset.
+- Tripwire warm-up is frame-based (skips the first frames) rather than wall-clock, so the
+  startup JIT storm no longer fires a false hitch.
+- Phase 3 calibration: `topMarkers` is ranked by the trigger's own dimension (GC for a
+  gc_spike), noise is filtered out (Profilot's own markers, JIT/GC.Alloc machinery,
+  editor-only markers), and repeats fold into one rolling record per trigger + dominant
+  marker (cross-store dedup) instead of one file per frame.
+
+### Fixed
+- Console logging is off by default - dogfooding showed `Debug.LogWarning` allocated in the
+  hot path and polluted the captured frame. The event store is the surface; logging is opt-in.
 
 ## [0.0.1] - 2026-06-25
 

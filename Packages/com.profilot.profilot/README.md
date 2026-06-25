@@ -19,14 +19,19 @@ It is built in two layers so the LLM is never called per frame:
 
 ## Status
 
-Early development. See the roadmap in [`SPEC.md`](../../SPEC.md) (section 17).
+Working end to end and verified live in Unity 6000.3. See the roadmap in
+[`SPEC.md`](../../SPEC.md) (section 17).
 
 - Phase 0 (done): diagnosis guidance for Claude Code - see
   [`profilot-diagnosis-guide.md`](../../profilot-diagnosis-guide.md).
-- Phase 0.5 (this build): `ProfilerDriver` frame-dump spike to validate the editor capture
-  API in isolation. Menu: `Tools/Profilot/Debug/Dump Last Frame To Console`.
-- Phase 1 (this build): the live tripwire skeleton (`ProfilotTripwire`).
-- Phase 2 (next): full-frame capture, event store, and the CLI.
+- Phase 0.5 (done): `ProfilerDriver` frame-dump spike that validated the editor capture API.
+  Menu: `Tools/Profilot/Debug/Dump Last Frame To Console`.
+- Phase 1 (done): the live tripwire (`ProfilotTripwire`).
+- Phase 2 (done): full-frame capture on trip, the file-based event store, and the Node CLI.
+- Phase 3 (in progress): calibration - marker-tree trimming, noise filtering, and cross-store
+  dedup by trigger + dominant marker.
+- Editor window (`Tools/Profilot/Window`): live states and the caught-issue list, with a
+  "copy diagnose command" button and Reviewed / Not-an-issue feedback.
 
 ## Requirements
 
@@ -35,9 +40,17 @@ Early development. See the roadmap in [`SPEC.md`](../../SPEC.md) (section 17).
 ## Layout
 
 ```
-Runtime/  ProfilotTripwire.cs      - Phase 1 live tripwire (ProfilerRecorder)
-Editor/   FrameDumpSpike.cs        - Phase 0.5 ProfilerDriver capture spike
+Runtime/  ProfilotTripwire.cs        - the live tripwire (ProfilerRecorder)
+          ProfilotTripChannel.cs     - in-memory trip hand-off to the editor
+Editor/   ProfilotEventCapture.cs    - on trip: fetch frame, normalize, write the event
+          MarkerTreeNormalizer.cs    - drill into PlayerLoop, trim the tree, topMarkers
+          ProfilotEventStore.cs      - atomic event files under Library/Profilot/events
+          ProfilotWindow.cs          - the editor window
+          FrameDumpSpike.cs          - the Phase 0.5 ProfilerDriver capture probe
+          Json.cs                    - dependency-free JSON emitter
 ```
+
+The Node CLI that reads the store lives at [`cli/`](../../cli) in the repo root.
 
 ## License
 
