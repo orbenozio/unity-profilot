@@ -42,8 +42,12 @@ namespace Profilot
         // wall-clock warmup expires mid-storm. Counters still warm during this window.
         public int WarmupFrames = 60;
 
-        // Convenience for development; the real surface is the event store, not the Console.
-        public bool LogToConsole = true;
+        // Off by default: Debug.LogWarning allocates (string interpolation + stack-trace
+        // capture), which violates the zero-alloc hot-path rule (SPEC.md M8) and pollutes
+        // the very frame being captured - Profilot dogfooding caught its own logging
+        // out-allocating the bug it was diagnosing. The event store is the real surface;
+        // turn this on only for quick Console debugging, accepting the allocation.
+        public bool LogToConsole = false;
 
         private ProfilerRecorder _mainThreadTime;      // nanoseconds
         private ProfilerRecorder _gcAllocated;         // bytes
