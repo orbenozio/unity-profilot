@@ -19,6 +19,7 @@ namespace Profilot.Editor
             public string eventId;
             public string status;
             public string reviewStatus;
+            public bool stale;
             public string capturedAt;
             public Trigger trigger;
             public Dedup dedup;
@@ -135,6 +136,9 @@ namespace Profilot.Editor
             GUI.color = SeverityColor(t.severity);
             EditorGUILayout.LabelField(headline, EditorStyles.boldLabel);
             GUI.color = prev;
+
+            if (e.stale)
+                EditorGUILayout.LabelField("(from a previous session - frame may no longer match)", EditorStyles.miniLabel);
 
             string marker = e.topMarkers != null && e.topMarkers.Length > 0 ? e.topMarkers[0].name : "(no marker - data may be partial)";
             EditorGUILayout.LabelField($"top: {marker}", EditorStyles.miniLabel);

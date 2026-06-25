@@ -72,6 +72,10 @@ namespace Profilot.Editor
             // In the Editor dev scenario this overhead is acceptable (SPEC.md NG3).
             Profiler.enabled = true;
 
+            // Everything already in the store is from a previous run - mark it stale before
+            // this session starts writing fresh events over it (SPEC.md section 15).
+            ProfilotEventStore.MarkAllStale();
+
             ProfilotTripChannel.Clear();
             Dedup.Clear();
             Reviewed.Clear();

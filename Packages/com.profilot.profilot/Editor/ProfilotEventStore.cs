@@ -57,6 +57,25 @@ namespace Profilot.Editor
             WriteAtomic(path, json);
         }
 
+        /// <summary>
+        /// Marks every event currently in the store as stale (SPEC.md section 15). Called
+        /// when a new Play session starts: anything already on disk is from a previous run,
+        /// so its frame indices no longer match the live profiler. Events that recur this
+        /// session are overwritten fresh (stale:false) by the capture service.
+        /// </summary>
+        public static void MarkAllStale()
+        {
+            if (!Directory.Exists(Root))
+                return;
+
+            foreach (string path in Directory.GetFiles(Root, "evt_*.json"))
+            {
+                string json = File.ReadAllText(path);
+                if (json.Contains("\"stale\":false"))
+                    WriteAtomic(path, json.Replace("\"stale\":false", "\"stale\":true"));
+            }
+        }
+
         private static void WriteAtomic(string path, string content)
         {
             string tmp = path + ".tmp";
