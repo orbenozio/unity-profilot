@@ -126,3 +126,29 @@ test('unknown command returns error status', () => {
   const r = run(p, ['frobnicate']);
   assert.equal(r.status, 'error');
 });
+
+test('list: skips a malformed event file rather than failing', () => {
+  const p = makeProject([sampleEvent('evt_good_gc_spike', 'gc_spike', '2026-06-25T10:00:00Z')]);
+  const dir = path.join(p, 'Library', 'Profilot', 'events');
+  fs.writeFileSync(path.join(dir, 'evt_broken_gc_spike.json'), '{ this is not json');
+  const r = run(p, ['list']);
+  assert.equal(r.status, 'ok');
+  assert.equal(r.count, 1);
+  assert.equal(r.events[0].eventId, 'evt_good_gc_spike');
+});
+
+test('diagnose --last: error when latest points to a missing file', () => {
+  const p = makeProject([sampleEvent('evt_a_gc_spike', 'gc_spike', '2026-06-25T10:00:00Z')]);
+  const dir = path.join(p, 'Library', 'Profilot', 'events');
+  fs.rmSync(path.join(dir, 'evt_a_gc_spike.json')); // keep latest.json, drop the event
+  const r = run(p, ['diagnose', '--last']);
+  assert.equal(r.status, 'error');
+});
+
+test('diagnose --last: error on malformed latest.json', () => {
+  const p = makeProject([sampleEvent('evt_a_gc_spike', 'gc_spike', '2026-06-25T10:00:00Z')]);
+  const dir = path.join(p, 'Library', 'Profilot', 'events');
+  fs.writeFileSync(path.join(dir, 'latest.json'), 'not json');
+  const r = run(p, ['diagnose', '--last']);
+  assert.equal(r.status, 'error');
+});
