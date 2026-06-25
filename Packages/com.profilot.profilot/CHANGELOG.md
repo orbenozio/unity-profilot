@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caught), a one-line summary per caught problem, a button that copies the exact
   `profilot diagnose --id <id>` command, and Reviewed / Not-an-issue feedback that writes
   reviewStatus back to the event (the editor owns the store write; the CLI stays read-only).
+- Events from a previous Play session are marked `stale` on the next play start (their frame
+  indices no longer match the live profiler); the window flags them.
+- Tests: a headless PlayMode integration test (`Profilot.PlayTests`) that allocates every
+  frame and asserts a gc_spike event is captured, plus a Node test suite for the CLI.
 
 ### Changed
 - Capture correlates the trip to the right profiler frame (`PickBestFrame`) instead of
