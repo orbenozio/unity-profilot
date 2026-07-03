@@ -25,6 +25,51 @@ and Claude Code does the interpreting.
 > Profiler markers are available only in the Editor and in development builds. In release builds
 > they are stripped - this matches the use case (developers develop in the Editor).
 
+## Installation
+
+Two pieces: the Unity package (captures the events) and the Node CLI (exposes them to Claude Code).
+
+1. **Unity package** - add to the target project's `Packages/manifest.json`, under `dependencies`:
+
+   ```json
+   "com.profilot.profilot": "https://github.com/orbenozio/unity-profilot.git?path=/Packages/com.profilot.profilot#release"
+   ```
+
+   `#release` always resolves to the latest release; pin an exact version with `#v0.1.0` instead.
+   Requires Unity 6000.3 or newer. No scene setup - the tripwire boots itself in Play Mode, and
+   events are written to `Library/Profilot/events/` inside the target project.
+
+2. **CLI** - from a clone of this repo:
+
+   ```bash
+   cd cli && npm link
+   ```
+
+   This makes the `profilot` command available. It finds the event store by walking up from the
+   working directory to the Unity project root (the nearest folder containing
+   `Library/Profilot/events`), or set `PROFILOT_PROJECT` to that root.
+
+3. **Guidance for Claude Code** - copy or link
+   [`profilot-diagnosis-guide.md`](profilot-diagnosis-guide.md) into the target project's
+   `CLAUDE.md`, so the agent knows when to run the CLI and how to read its output.
+
+## Usage
+
+1. Enter Play Mode and reproduce the performance problem.
+2. When the tripwire catches a spike, the editor window (`Tools/Profilot/Window`) shows it, with a
+   button that copies the exact diagnose command.
+3. Ask Claude Code to "diagnose the last event" - it runs the CLI, gets the structured frame, and
+   returns a diagnosis plus a suggested fix.
+
+CLI commands (read-only, print structured JSON to stdout, no LLM):
+
+```
+profilot diagnose --last          # the most recently captured event (full record)
+profilot diagnose --id <eventId>  # a specific event
+profilot list                     # summaries of the captured events
+profilot status                   # is the store present, how many events, what is latest
+```
+
 ## Repository contents
 
 | Path | What |

@@ -51,10 +51,21 @@ not to find magic absolute numbers.
 
 ## Release phase (packaging and distribution - the "operational" gap)
 
+### Done
+- [x] Cut the first release: v0.1.0 (tag + GitHub release), package bumped 0.0.1 -> 0.1.0.
+- [x] UPM distribution via git URL: `...git?path=/Packages/com.profilot.profilot`.
+      Always-latest through a moving `release` branch (fast-forward to each new release);
+      `#release` for latest, `#v0.1.0` to pin.
+
+### Release workflow (repeat each version)
+1. Bump `Packages/com.profilot.profilot/package.json` version + move CHANGELOG `[Unreleased]` -> `[x.y.z]`.
+2. Commit on main, `git tag vX.Y.Z`, push main + tag.
+3. Move the moving branch: `git branch -f release vX.Y.Z && git push -f origin release`.
+4. `gh release create vX.Y.Z`. Consuming projects on `#release` just Refresh in Package Manager.
+
 ### Todo
 - [ ] Lock the name / npm handle / domain (Q6, owner decision) - blocks npm publish
-- [ ] Publish the CLI to npm (`profilot`), bump from 0.0.1
-- [ ] Publish / document install of the UPM package (`com.profilot.profilot`), bump from 0.0.1
+- [ ] Publish the CLI to npm (`profilot`), bump from 0.0.1 (or document `npm link` from `cli/`)
 - [ ] Ship the project-guidance file + one-step install instructions (copy/link into CLAUDE.md)
 - [ ] End-to-end install test from a clean machine / fresh project (stranger can run it)
 - [ ] Product-facing README / getting-started (technical-product-writer pass)
