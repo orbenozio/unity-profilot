@@ -86,13 +86,12 @@ namespace Profilot.Editor
         }
 
         /// <summary>
-        /// Markers that are noise in topMarkers: not user game code, so they must not crowd
-        /// out the marker Claude needs to map. Calibration from live dogfooding (SPEC.md
-        /// section 17, phase 3): Profilot's own markers, the allocation/JIT machinery, and
-        /// editor-only markers (stripped in a real build anyway, SPEC.md NG3). This filters
-        /// ranking only; the full tree below still keeps these nodes for context.
+        /// Hard noise: not user code AND its subtree is irrelevant, so CollectAll prunes it
+        /// entirely (does not descend). Profilot's own markers, the allocation/JIT machinery,
+        /// and editor-only work (stripped in a real build anyway, SPEC.md NG3). Calibration
+        /// from live dogfooding + the golden harness (SPEC.md section 17, phase 3).
         /// </summary>
-        private static bool IsNoiseForTop(string name)
+        private static bool IsSkipSubtree(string name)
         {
             if (string.IsNullOrEmpty(name))
                 return true;
@@ -100,15 +99,71 @@ namespace Profilot.Editor
             // (e.g. the ProfilotDemo sample), which is exactly the code we want to surface.
             if (name.Contains("Profilot.Runtime") || name.Contains("Profilot.Editor"))
                 return true;
-            if (name == "Mono.JIT" || name == "GC.Alloc" || name == "LogStringToConsole")
+            // Allocation / collection machinery: GC.Collect is the collector pausing the
+            // frame, not the code that caused the garbage - the responsible allocator is the
+            // marker to surface, so prune the machinery from ranking.
+            if (name == "Mono.JIT" || name == "GC.Alloc" || name == "GC.Collect" ||
+                name == "LogStringToConsole")
                 return true;
             if (name.Contains("StackTraceUtility"))
                 return true;
             // Editor-only work (EditorLoop, EditorConnection, EditorResources, AssetDatabase,
-            // GUIUtility, ...). Matching "Editor" is broad, but it only affects ranking, and
-            // these markers do not exist in a development build.
+            // GUIUtility, ...). Matching "Editor" is broad, but these markers do not exist in a
+            // development build.
             if (name.Contains("Editor") || name.Contains("AssetDatabase") || name.Contains("GUIUtility"))
                 return true;
+            return false;
+        }
+
+        /// <summary>
+        /// Excluded from ranking but NOT from the walk: CollectAll still descends into these,
+        /// because the responsible user marker sits underneath them. Two kinds (golden-harness
+        /// findings, SPEC.md phase 3):
+        ///   - Generic PlayerLoop phases (UpdateScene, BehaviourUpdate, ...): containers whose
+        ///     inclusive time/alloc just bubbles up their children, so ranking on them would
+        ///     surface a phase name instead of the user method that actually allocated/stalled.
+        ///   - GPU / present / vsync waits: the main thread is idle waiting for the GPU or
+        ///     vsync, not doing the developer's work; a frame dominated by these is a false
+        ///     hitch (M4), not a CPU stall to fix.
+        /// When every rankable marker is filtered out (e.g. a pure GPU-wait frame), the
+        /// dominant marker comes back empty and the capture drops the event.
+        /// </summary>
+        private static bool IsExcludedFromRanking(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+                return true;
+
+            // GPU / present / vsync / semaphore waits - main thread idle, not user CPU work.
+            if (name.Contains("WaitForGPU") || name.Contains("WaitForLastPresentation") ||
+                name.Contains("WaitForTargetFPS") || name.Contains("Gfx.WaitFor") ||
+                name.Contains("GfxDeviceD3D") || name.Contains("Gfx.PresentFrame") ||
+                name.Contains("WaitForPresent") || name.Contains("Present.WaitForJobGroupID") ||
+                name.Contains("Semaphore.WaitForSignal") || name.Contains("VSync"))
+                return true;
+
+            // Generic PlayerLoop structural phases (exact names - a user method shows as
+            // "Class.Update", never bare "Update", so these do not catch user code).
+            switch (name)
+            {
+                case "PlayerLoop":
+                case "UpdateScene":
+                case "BehaviourUpdate":
+                case "LateBehaviourUpdate":
+                case "FixedBehaviourUpdate":
+                case "PreUpdate":
+                case "PreLateUpdate":
+                case "Update":
+                case "FixedUpdate":
+                case "Initialization":
+                case "EarlyUpdate":
+                    return true;
+            }
+            if (name.Contains("ScriptRunBehaviour") || name.Contains("ScriptRunDelayed") ||
+                name.StartsWith("Update.") || name.StartsWith("PreUpdate.") ||
+                name.StartsWith("PreLateUpdate.") || name.StartsWith("FixedUpdate.") ||
+                name.StartsWith("EarlyUpdate.") || name.StartsWith("Initialization."))
+                return true;
+
             return false;
         }
 
@@ -133,10 +188,17 @@ namespace Profilot.Editor
             view.GetItemChildren(id, children);
             foreach (int c in children)
             {
-                // Skip noise (and its subtree) so topMarkers stays focused on user code.
-                if (IsNoiseForTop(view.GetItemName(c)))
+                string name = view.GetItemName(c);
+
+                // Hard noise: prune the whole subtree (nothing useful under it).
+                if (IsSkipSubtree(name))
                     continue;
-                acc.Add(Read(view, c));
+
+                // Structural phases / GPU waits: do not rank them, but still descend - the
+                // responsible user marker lives underneath (SPEC.md phase 3, golden harness).
+                if (!IsExcludedFromRanking(name))
+                    acc.Add(Read(view, c));
+
                 CollectAll(view, c, acc, depth + 1);
             }
         }

@@ -3,7 +3,8 @@
   "rootNamespace": "Profilot.PlayTests",
   "references": [
     "UnityEngine.TestRunner",
-    "UnityEditor.TestRunner"
+    "UnityEditor.TestRunner",
+    "Profilot.Runtime"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],

@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-03
+
 ### Added
 - Phase 0.5 spike: `Tools/Profilot/Debug/Dump Last Frame To Console` menu item that
   fetches the last captured frame via `ProfilerDriver` + `HierarchyFrameDataView` and
@@ -34,8 +36,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   indices no longer match the live profiler); the window flags them.
 - Tests: a headless PlayMode integration test (`Profilot.PlayTests`) that allocates every
   frame and asserts a gc_spike event is captured, plus a Node test suite for the CLI.
+- Phase 3 golden-scenario calibration harness (`GoldenScenarioTests`): scenarios with a
+  KNOWN responsible method (a GC allocator and a synchronous main-thread stall) that assert
+  both that the problem was caught (M5 recall) and that the captured event's dominant marker
+  names the responsible method (M3 mapping). Runs live in the editor via the agent bridge.
 
 ### Changed
+- Frame-hitch detection is now relative to the project's own rolling frame-time baseline
+  (a frame above `baseline * FrameHitchMultiplier` and above an absolute `FrameHitchFloorMs`)
+  instead of a fixed 16.6ms / 60fps budget. A hitch is a stutter relative to how the game
+  normally runs, so detection transfers across projects and frame-rate targets without
+  flooding an early-development or 30fps project with false hitches (SPEC.md M4). The
+  baseline seeds only after warm-up (so the JIT/init storm never inflates it) and rejects
+  spike frames (so a run of hitches can't drag it up). Minimum supported Unity is 6000.3.
 - Capture correlates the trip to the right profiler frame (`PickBestFrame`) instead of
   blindly using `lastFrameIndex`, fixing the editor/player frame-index offset.
 - Tripwire warm-up is frame-based (skips the first frames) rather than wall-clock, so the
@@ -44,6 +57,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gc_spike), noise is filtered out (Profilot's own markers, JIT/GC.Alloc machinery,
   editor-only markers), and repeats fold into one rolling record per trigger + dominant
   marker (cross-store dedup) instead of one file per frame.
+- Phase 3 calibration (from the golden harness): marker ranking now descends through - but
+  never ranks - generic PlayerLoop structural phases (`UpdateScene`, `BehaviourUpdate`, ...),
+  GPU/vsync/present waits, and the `GC.Collect` collector, so the dominant marker names the
+  user code that actually allocated or stalled instead of a phase name, an idle GPU wait, or
+  the collector. A frame_hitch whose only heavy markers were waits/structural (a GPU-bound or
+  idle frame, no user CPU work to blame) is dropped rather than written as a false positive
+  (M4/M6).
 
 ### Fixed
 - Console logging is off by default - dogfooding showed `Debug.LogWarning` allocated in the

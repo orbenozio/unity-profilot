@@ -14,8 +14,8 @@
 1. **דמו מול live - מסגור.** הדמו (Flow A / שלב 0) הוא *מנוע אימוץ ויראלי על נתונים חלקיים*, לא המוצר. המוצר הוא ה-live (נתונים מובנים). screenshot הוא best-effort: ללא call hierarchy אמין, ולכן המיפוי marker->קוד (M3, JTBD-3) רלוונטי ל-live בלבד. קריטריוני הקבלה והמדדים מופרדים בין מסלול A למסלול B.
 2. **מי סוגר אירוע + ערוץ feedback.** ה-Editor (החלון) הוא הבעלים של כתיבת ה-event store; ה-CLI נשאר read-only. בחלון Profilot יש כפתור ידני "סמן כנסקר / לא בעיה אמיתית", וזה גם ערוץ ה-feedback שעליו נשענים M2/M4/M9. זו דרישת מוצר, לא רק עיצוב.
 3. **שפת ה-CLI (A-Q1).** Node.js + הפצת npm. ה-CLI הוא transport טהור (pass-through JSON), ולכן שיתוף DTOs עם ה-package כמעט לא רלוונטי, וקלות ההפצה מכריעה.
-4. **גרסת Unity מינימלית (Q1).** Unity 2022.3 LTS כמינימום (ProfilerRecorder בוגר, HierarchyFrameDataView יציב). לאמת בשלב 0/1.
-5. **ספי ברירת מחדל (Q2).** placeholder עד כיול: frame budget 16.6ms (60fps, ניתן להגדרה), GC alloc per frame מעל 0, draw calls מעל סף יחסי ל-baseline. מותר לקבע אותם בקריטריוני הקבלה של JTBD-2 כ-placeholder.
+4. **גרסת Unity מינימלית (Q1).** Unity 6000.3 כמינימום (עודכן על ידי הבעלים 2026-07-02; קודם 2022.3 LTS). זו הגרסה שעליה פותח ואומת המוצר בפועל; ProfilerRecorder ו-HierarchyFrameDataView יציבים בה.
+5. **ספי ברירת מחדל (Q2).** placeholder עד כיול: frame hitch מזוהה **יחסית ל-baseline מתגלגל של הפרויקט עצמו** (פריים מעל `baseline * 2.0` ומעל רצפה אבסולוטית של 12ms) ולא מול תקציב 60fps קבוע - כדי שהזיהוי יעבור בין פרויקטים ובין יעדי frame-rate בלי הצפת false positives (עודכן 2026-07-02, קודם 16.6ms קבוע), GC alloc per frame מעל 0, draw calls מעל סף יחסי ל-baseline. מותר לקבע אותם בקריטריוני הקבלה של JTBD-2 כ-placeholder.
 6. **תיקון אוטומטי (Q4).** NG2 נשאר נחרץ לאיטרציה זו: מאבחנים ומציעים, לא מחילים. (Claude Code ממילא עורך לפי בקשת המשתמש.)
 7. **הנחיית פרויקט.** ה-UPM package מספק קובץ הנחיה תבניתי שהמשתמש מעתיק/מקשר ל-CLAUDE.md ידנית (לא הזרקה אוטומטית באיטרציה זו). שייך לשלב 0.
 8. **physics (NG5).** hitch שמקורו physics עדיין ייתפס כ-frame_hitch גנרי; האבחון רשאי לומר "המקור ב-physics, מחוץ לסקופ הניתוח הנוכחי".
@@ -568,7 +568,7 @@ Validation: ערך לא-מספרי או שלילי -> הודעת שגיאה inli
 - **`Unity.Profiling.ProfilerRecorder`** (Unity 2020.2+) - ה-tripwire. נבחר כי הוא ה-API הרשמי והזול לקריאת counters בזמן ריצה, ועובד ב-Editor וב-Players כאחד. ראה אילוץ הגרסה למטה.
 - **`UnityEditorInternal.ProfilerDriver` + `UnityEditor.Profiling.HierarchyFrameDataView` / `RawFrameDataView`** - שליפת הפריים המלא בצד ה-Editor. זה ה-API שה-Profiler window עצמו משתמש בו. אזהרה: `ProfilerDriver` הוא internal/undocumented ויש דיוני deprecation - מתועד כסיכון ב-[[#16-סיכונים-ומיטיגציה]].
 - **`FrameTimingManager`** - timings של CPU/GPU ברמת פריים, ב-overhead נמוך. דורש `CaptureFrameTimings()` בכל פריים ואז `GetLatestTimings()`; ב-Editor/dev זמין, ב-release דורש הפעלת Frame Timing Stats ב-Player settings (לא רלוונטי לנו, ראה NG3).
-- **UI Toolkit (UIElements)** לחלון ה-Editor - הסטנדרט המודרני ל-EditorWindow ב-Unity, נגיש למקלדת ול-SR מתוך הקופסה (תומך בדרישות [[#11-שיקולי-נגישות]]), ונקי יותר מ-IMGUI. ברף 2022.3 LTS (הכרעה 4) UI Toolkit בוגר ב-Editor, ולכן הוא הבחירה ואין צורך ב-fallback ל-IMGUI.
+- **UI Toolkit (UIElements)** לחלון ה-Editor - הסטנדרט המודרני ל-EditorWindow ב-Unity, נגיש למקלדת ול-SR מתוך הקופסה (תומך בדרישות [[#11-שיקולי-נגישות]]), ונקי יותר מ-IMGUI. ברף 6000.3 (הכרעה 4) UI Toolkit בוגר ב-Editor, ולכן הוא הבחירה ואין צורך ב-fallback ל-IMGUI.
 - **System.Text.Json לא זמין בכל גרסאות Unity** - לכן סריאליזציה ל-event store דרך **`UnityEngine.JsonUtility`** למבנים פשוטים, או Newtonsoft (`com.unity.nuget.newtonsoft-json`, package רשמי) למבנים מקוננים כמו עץ markers. נטייה ל-Newtonsoft כי עץ ה-markers מקונן ו-`JsonUtility` חלש בקינון/מערכים פולימורפיים.
 
 **Profilot CLI**
@@ -580,10 +580,10 @@ Validation: ערך לא-מספרי או שלילי -> הודעת שגיאה inli
 - מודל ה-LLM הוא Claude (דרך Claude Code שכבר אצל המשתמש) - אין לנו עלות API ישירה ואין ניהול מפתח מצדנו; העלות היא של המשתמש, מה שמפשט מאוד את [[#15-nfrs---ביצועים--אבטחה--scale]] (אין secrets לנהל).
 
 **אילוצי פלטפורמה וגרסה (נסגר - הכרעה 4):**
-- **רף מינימלי רשמי: Unity 2022.3 LTS.** זו ההכרעה המחייבת. בגרסה זו `ProfilerRecorder` בוגר, `HierarchyFrameDataView` / `RawFrameDataView` יציבים, ו-UI Toolkit ב-Editor בשל. לאמת בפועל מול 2022.3 LTS בשלב 0/1, ורצוי גם מול Unity 6 כדי לוודא קדימה-תאימות.
-- לידיעה היסטורית: `ProfilerRecorder` קיים כבר מ-Unity 2020.2, אך אנחנו לא תומכים מתחת ל-2022.3 כדי לא לפצל מאמץ בדיקה ולקבל את ה-UI הבוגר.
+- **רף מינימלי רשמי: Unity 6000.3** (עודכן על ידי הבעלים 2026-07-02; קודם 2022.3 LTS). זו ההכרעה המחייבת וזו הגרסה שעליה המוצר פותח ואומת חי. בגרסה זו `ProfilerRecorder` בוגר, `HierarchyFrameDataView` / `RawFrameDataView` יציבים, ו-UI Toolkit ב-Editor בשל.
+- לידיעה היסטורית: `ProfilerRecorder` קיים כבר מ-Unity 2020.2, אך אנחנו לא תומכים מתחת ל-6000.3 כדי לא לפצל מאמץ בדיקה ולתמוך רק בגרסה שאומתה בפועל.
 
-> הערה: A-Q1 (שפת ה-CLI) נסגרה - Node.js + npm (הכרעה 3), ראה למעלה. Q1 (רף Unity) נסגרה - 2022.3 LTS (הכרעה 4). אין כרגע שאלות טכניות פתוחות בסעיף זה.
+> הערה: A-Q1 (שפת ה-CLI) נסגרה - Node.js + npm (הכרעה 3), ראה למעלה. Q1 (רף Unity) נסגרה - 6000.3 (הכרעה 4, עודכן 2026-07-02). אין כרגע שאלות טכניות פתוחות בסעיף זה.
 
 ### 14. מודל נתונים ו-APIs
 
@@ -713,13 +713,13 @@ ProfilotEvent {
 
 **שלב 0 - דמו / screenshot (Flow A) + spike טכני ל-R1. מאמת: "קלוד מאבחן profiler באמת" ובמקביל מוודא ש-`ProfilerDriver` שליף.**
 - היקף עיקרי (Flow A): **קובץ הנחיית הפרויקט התבניתי** (deliverable מוגדר, הכרעה 7) שמלמד את Claude Code לקבל screenshot/טקסט של ה-Profiler, לקרוא קוד מהריפו, ולהחזיר אבחון במבנה הקבוע ([[#9-מסכים-ו-states-עיקריים]] מסך 4/6). המשתמש מעתיק/מקשר אותו ל-CLAUDE.md ידנית. אפס קוד Unity, אפס CLI, אפס package.
-- **spike טכני מקביל ומנותק (מוריד את R1 מוקדם):** ניסוי קטן ועצמאי שבודק שליפת `HierarchyFrameDataView` מ-**פריים יחיד** דרך `ProfilerDriver` ב-Unity 2022.3 LTS - בלי tripwire, בלי event store, בלי שום אינטגרציה. רק לאמת שה-API ה-internal הזה אכן מחזיר עץ markers שמיש מול הרף שנקבע (הכרעה 4). זה מאמת את R1 (ההנחה הטכנית השברירית ביותר) לפני ששלב 2 נשען עליו, בלי לדחות את הדמו. הספייק לא חלק מהמוצר - תוצרו הוא ידע (כן/לא + צורת ה-API), ואופציונלית שלד ל-`IFrameDataSource`.
-- תלויות: הדמו תלוי רק ב-Claude Code עצמו. הספייק תלוי רק ב-Unity 2022.3 LTS. שניהם בלתי-תלויים זה בזה ובשאר השלבים.
+- **spike טכני מקביל ומנותק (מוריד את R1 מוקדם):** ניסוי קטן ועצמאי שבודק שליפת `HierarchyFrameDataView` מ-**פריים יחיד** דרך `ProfilerDriver` ב-Unity 6000.3 - בלי tripwire, בלי event store, בלי שום אינטגרציה. רק לאמת שה-API ה-internal הזה אכן מחזיר עץ markers שמיש מול הרף שנקבע (הכרעה 4). זה מאמת את R1 (ההנחה הטכנית השברירית ביותר) לפני ששלב 2 נשען עליו, בלי לדחות את הדמו. הספייק לא חלק מהמוצר - תוצרו הוא ידע (כן/לא + צורת ה-API), ואופציונלית שלד ל-`IFrameDataSource`.
+- תלויות: הדמו תלוי רק ב-Claude Code עצמו. הספייק תלוי רק ב-Unity 6000.3. שניהם בלתי-תלויים זה בזה ובשאר השלבים.
 - קריטריון יציאה בר-בדיקה: (א) על סט תרחישי screenshot ידועים (GC כל פריים, draw calls, hitch), Claude מחזיר אבחון נכון במבנה הקבוע ב-90% מההרצות (קלט ל-M1, M2) - מייצב את מבנה הפלט (מיטיגציית R6) לפני ש-live נבנה; (ב) הספייק מראה שאפשר לשלוף עץ markers שמיש מפריים יחיד ב-`ProfilerDriver` (R1 מאומת חיובי), או מסמן דגל אדום מוקדם אם לא - לפני שלב 2.
 
 **שלב 1 - tripwire מקומי בלבד, בלי שליפת פריים מלא ובלי CLI. מאמת: "אפשר לתפוס אנומליה בזול בזמן ריצה".**
 - היקף: Runtime assembly עם `ProfilerRecorder` (גילוי דרך `GetAvailable`/`Valid`) + `FrameTimingManager` + היוריסטיקה + ספי תקציב, וחלון Editor בסיסי שמראה את states "אין בעיות" / "נתפס spike" ([[#9-מסכים-ו-states-עיקריים]] מסך 1, 2, 5) ושורת Console. האירוע נכתב ל-event store עם counters בלבד (בלי markerTree עדיין; dedup לפי `type` בלבד בשלב זה - ראה [[#15-nfrs---ביצועים--אבטחה--scale]]).
-- תלויות: רק `ProfilerRecorder` (זמין מ-2020.2, נבדק מול רף 2022.3 LTS). לא תלוי ב-`ProfilerDriver`.
+- תלויות: רק `ProfilerRecorder` (זמין מ-2020.2, נבדק מול רף 6000.3). לא תלוי ב-`ProfilerDriver`.
 - קריטריון יציאה: בהרצה נקייה - אפס אירועים; **overhead ה-tripwire (כולל `CaptureFrameTimings`) נמדד בפועל ומאומת מתחת ליעד M8 (מתחת ל-0.5ms/פריים)** - זו המדידה שמאשרת או מפריכה את שאיפת ה-0.1ms, ואם נכשל מפעילים את fallback הדגימה בתדירות נמוכה ([[#15-nfrs---ביצועים--אבטחה--scale]]). בתרחיש בעיה מתוכנן - אירוע נתפס ונכתב לקובץ אטומית (`latest.json` אחרון), עם דה-דופ פעיל (M4, M5, M6). חלון ה-Editor משקף נכון את ה-states וכותב `reviewStatus` על סימון ידני.
 
 **שלב 2 - שליפת פריים מלא + CLI + מסלול live מלא (Flow B). מאמת: "הלולאה השלמה Editor -> CLI -> Claude עובדת".**
@@ -743,7 +743,7 @@ ProfilotEvent {
 |---|---|---|---|
 | ux-designer | מסך 5 (Flow D) מציג כפתור "▶ Play" כפעולה ישירה מתוך חלון Profilot. ההיתכנות (להפעיל Play Mode מתוך EditorWindow) היא החלטה טכנית - אם לא טריוויאלי, אפשר להחליף בהנחיה טקסטואלית בלבד. | 9, [[#12-ארכיטקטורת-מערכת]] | נסגר (architect): ישים וטריוויאלי דרך `EditorApplication.isPlaying = true`. הכפתור נשאר. |
 | ux-designer | ה-UX מניח event store משותף שגם ה-Editor כותב אליו וגם ה-CLI קורא ממנו ("האירוע האחרון" / id), כולל דה-דופ ותור. מבנה האחסון והגישה המשותפת הם בבעלות architect. | 7, 8, 10, [[#14-מודל-נתונים-ו-apis]] | נסגר (architect): event store מבוסס קבצים תחת `Library/Profilot/events/`, קובץ JSON אטומי לאירוע + `latest.json`, ה-CLI read-only. סכמת הרשומה ב-[[#14-מודל-נתונים-ו-apis]]. |
-| architect | רף גרסת Unity (Q1) משפיע על בחירת UI Toolkit מול IMGUI לחלון, ועל יציבות `ProfilerDriver`. `ProfilerRecorder` דורש 2020.2+; המלצה טכנית 2021 LTS+. החלטת בעלים נדרשת. | [[#13-סטאק-טכנולוגי-ונימוק]], Q1 | נסגר (בעלים, הכרעה 4): Unity 2022.3 LTS כמינימום. לאמת בשלב 0/1. |
+| architect | רף גרסת Unity (Q1) משפיע על בחירת UI Toolkit מול IMGUI לחלון, ועל יציבות `ProfilerDriver`. `ProfilerRecorder` דורש 2020.2+; המלצה טכנית 2021 LTS+. החלטת בעלים נדרשת. | [[#13-סטאק-טכנולוגי-ונימוק]], Q1 | נסגר (בעלים, הכרעה 4): Unity 6000.3 כמינימום (עודכן 2026-07-02, קודם 2022.3 LTS). אומת חי על 6000.3. |
 | architect | שאלה טכנית חדשה A-Q1: שפת ה-CLI (.NET single-file מול Node/npm). נטייה ל-.NET לשיתוף DTOs. להכריע לפני שלב 2. | [[#13-סטאק-טכנולוגי-ונימוק]], [[#17-roadmap-בשלבים]] | נסגר (בעלים, הכרעה 3): Node.js + npm. ה-CLI הוא transport טהור, שיתוף DTOs לא קריטי, קלות הפצה מכריעה. (architect ליישם ב-13/17.) |
 | product | DRAFT v2: מסלול הדמו מוסגר מפורשות כ-best-effort על נתונים חלקיים; M3/JTBD-3 (מיפוי marker->קוד) רלוונטיים ל-live בלבד. אם §7 (Flow A) או §9 (מסך 6) ימשיכו להציג מיפוי לקוד כתוצר ודאי של הדמו - זו אי-התאמה ל-§4/§5 ויש ליישר. | 1, 4, 5, [[#7-user-flows-ומסעות]], [[#9-מסכים-ו-states-עיקריים]] | נסגר (ux-designer, DRAFT v2): Flow A עודכן ל-JTBD-1/4/7 (לא JTBD-3), עם הסתייגות best-effort מפורשת; מסך 6 מסויג ("מיקום בקוד קיים רק אם Claude הצליח, אין התחייבות"). התפר עקבי. |
 | product | DRAFT v2: נוסף JTBD-8 (ערוץ feedback ידני "סמן כנסקר / לא בעיה אמיתית") כדרישת מוצר שעליה נשענים M2/M4/M9. נדרש לוודא שהכפתור מופיע מפורשות בחלון ב-§9 (מסך 2) כרכיב UI, לא רק בזרימה. | 4, 6, [[#9-מסכים-ו-states-עיקריים]], [[#12-ארכיטקטורת-מערכת]] | נסגר (ux-designer, DRAFT v2): הכפתור "סמן כנסקר / לא בעיה אמיתית" מופיע ב-wireframe של מסך 2, ב-Tab order של §11, ב-Flow B שלב 8, ובטבלת ה-states וב-Success ב-§10. ה-Editor כותב ל-store (הכרעה 2). |

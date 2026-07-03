@@ -1,5 +1,16 @@
 {
   "dependencies": {
+    "com.orbenozio.unity-agent-bridge": {
+      "version": "https://github.com/orbenozio/unity-agent-bridge.git?path=/unity-package#v0.2.1",
+      "depth": 0,
+      "source": "git",
+      "dependencies": {
+        "com.unity.nuget.newtonsoft-json": "3.2.1",
+        "com.unity.ugui": "2.0.0",
+        "com.unity.test-framework": "1.6.0"
+      },
+      "hash": "d8f666c1dfccc444728d51915c2a51277749f050"
+    },
     "com.profilot.profilot": {
       "version": "file:com.profilot.profilot",
       "depth": 0,
@@ -20,6 +31,13 @@
         "com.unity.modules.uielements": "1.0.0"
       }
     },
+    "com.unity.nuget.newtonsoft-json": {
+      "version": "3.2.2",
+      "depth": 1,
+      "source": "registry",
+      "dependencies": {},
+      "url": "https://packages.unity.com"
+    },
     "com.unity.test-framework": {
       "version": "1.6.0",
       "depth": 0,
@@ -28,6 +46,15 @@
         "com.unity.ext.nunit": "2.0.3",
         "com.unity.modules.imgui": "1.0.0",
         "com.unity.modules.jsonserialize": "1.0.0"
+      }
+    },
+    "com.unity.ugui": {
+      "version": "2.0.0",
+      "depth": 1,
+      "source": "builtin",
+      "dependencies": {
+        "com.unity.modules.ui": "1.0.0",
+        "com.unity.modules.imgui": "1.0.0"
       }
     },
     "com.unity.modules.accessibility": {

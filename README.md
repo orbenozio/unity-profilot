@@ -48,7 +48,7 @@ See [`SPEC.md`](SPEC.md) section 17. Current state:
 
 ## Requirements
 
-- Unity 2022.3 LTS or newer (developed on Unity 6000.3).
+- Unity 6000.3 or newer (developed and verified on Unity 6000.3).
 
 ## License
 

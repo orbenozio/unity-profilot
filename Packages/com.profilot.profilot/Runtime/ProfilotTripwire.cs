@@ -24,8 +24,16 @@ namespace Profilot
         private static readonly string[] TripTypes = { "frame_hitch", "gc_spike", "draw_calls" };
         private static readonly string[] TripMetrics = { "frameTimeMs", "gcAllocBytes", "drawCalls" };
 
-        // Placeholder budget defaults (SPEC.md decision 5; calibrated in Phase 3).
-        public double FrameBudgetMs = 16.6;            // 60 fps
+        // Detection defaults (SPEC.md decision 5; calibrated in Phase 3).
+        //
+        // Frame hitch is detected RELATIVE to the project's own rolling baseline, not against
+        // a fixed 60 fps budget: a hitch is a frame much worse than how this game normally
+        // runs (a stutter), which is project-agnostic by construction. A fixed 16.6ms budget
+        // would flood an early-development project or a 30 fps target with false hitches
+        // (SPEC.md M4). The absolute floor guards the opposite case - a 2ms -> 6ms jump on a
+        // trivial scene is 3x baseline but not worth flagging.
+        public float FrameHitchMultiplier = 2.0f;      // a frame N times its rolling baseline
+        public double FrameHitchFloorMs = 12.0;        // ...and at least this long in absolute terms
         public long GcAllocBudgetBytes = 0;            // any in-frame allocation is a candidate
         public float DrawCallsBaselineMultiplier = 1.5f;
 
@@ -56,6 +64,8 @@ namespace Profilot
         private int _enabledFrame;
         private double _drawCallsBaseline;
         private bool _baselineWarm;
+        private double _frameMsBaseline;
+        private bool _frameBaselineWarm;
 
         private readonly double[] _lastReportTime = new double[TripKindCount];
         private readonly int[] _suppressedSinceReport = new int[TripKindCount];
@@ -113,14 +123,20 @@ namespace Profilot
             _draws = _drawCalls.Valid ? _drawCalls.LastValue : 0.0;
 
             UpdateDrawCallsBaseline(_draws);
+            UpdateFrameBaseline(_frameMs);
 
             // Let the first frames after Play settle (scene init + JIT) before flagging.
             if (Time.frameCount - _enabledFrame < WarmupFrames)
                 return;
 
+            // A hitch is a frame that spikes above this project's own rolling baseline and is
+            // long enough in absolute terms to matter. Relative, so it transfers across
+            // projects and frame-rate targets without a fixed budget.
+            double hitchThreshold = _frameMsBaseline * FrameHitchMultiplier;
+
             // First match wins; a full multi-event model per frame comes later.
-            if (_mainThreadTime.Valid && _frameMs > FrameBudgetMs)
-                OnTrip(TripKind.FrameHitch, _frameMs, FrameBudgetMs);
+            if (_mainThreadTime.Valid && _frameBaselineWarm && _frameMs > hitchThreshold && _frameMs > FrameHitchFloorMs)
+                OnTrip(TripKind.FrameHitch, _frameMs, hitchThreshold);
             else if (_gcAllocated.Valid && _gcBytes > GcAllocBudgetBytes)
                 OnTrip(TripKind.GcSpike, _gcBytes, GcAllocBudgetBytes);
             else if (_baselineWarm && _drawCalls.Valid && _draws > _drawCallsBaseline * DrawCallsBaselineMultiplier)
@@ -140,6 +156,32 @@ namespace Profilot
             }
 
             _drawCallsBaseline = (1.0 - alpha) * _drawCallsBaseline + alpha * draws;
+        }
+
+        private void UpdateFrameBaseline(double frameMs)
+        {
+            const double alpha = 0.05;
+
+            // Seed only once the warm-up window has passed, so the JIT / scene-init storm on
+            // the first frames never becomes the baseline (it would inflate the hitch
+            // threshold for a long time). Triggering also starts only after warm-up, so the
+            // baseline is always seeded from a settled frame.
+            if (Time.frameCount - _enabledFrame < WarmupFrames)
+                return;
+
+            if (!_frameBaselineWarm)
+            {
+                _frameMsBaseline = frameMs;
+                _frameBaselineWarm = true;
+                return;
+            }
+
+            // Don't let a spike frame poison the baseline - otherwise a run of hitches would
+            // drag it up until nothing trips. Fold in normal frames only.
+            if (frameMs > _frameMsBaseline * FrameHitchMultiplier)
+                return;
+
+            _frameMsBaseline = (1.0 - alpha) * _frameMsBaseline + alpha * frameMs;
         }
 
         private void OnTrip(TripKind kind, double value, double budget)

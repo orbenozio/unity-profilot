@@ -35,7 +35,7 @@ Working end to end and verified live in Unity 6000.3. See the roadmap in
 
 ## Requirements
 
-- Unity 2022.3 LTS or newer (developed and tested on Unity 6000.3).
+- Unity 6000.3 or newer (developed and tested on Unity 6000.3).
 
 ## Layout
 

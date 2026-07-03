@@ -129,6 +129,14 @@ namespace Profilot.Editor
                 view?.Dispose();
             }
 
+            // A frame_hitch whose only heavy markers were GPU/vsync waits or structural
+            // PlayerLoop phases has no user CPU work to blame: it is a GPU-bound / idle frame,
+            // a false positive (SPEC.md M4/M6), not a stall to fix. Drop it instead of writing
+            // noise. Only when the frame was read cleanly (status ok) - an error frame keeps
+            // its counter snapshot.
+            if (signal.Type == "frame_hitch" && status == "ok" && string.IsNullOrEmpty(dominantMarker))
+                return;
+
             // Stable id per problem (type + dominant marker) so repeats overwrite one file.
             string eventId = $"evt_{signal.Type}_{Slug(dominantMarker)}";
 
