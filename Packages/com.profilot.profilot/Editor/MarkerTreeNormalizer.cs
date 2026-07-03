@@ -30,11 +30,19 @@ namespace Profilot.Editor
         }
 
         public static void Build(HierarchyFrameDataView view, bool rankByAlloc, out string markerTreeJson,
-            out string topMarkersJson, out string dominantMarker, out float frameMs)
+            out string topMarkersJson, out string dominantMarker, out float frameMs, out float cpuMs)
         {
             frameMs = view.frameTimeMs;
             int rootId = view.GetRootItemID();
             int startId = FindPlayerLoop(view, rootId);
+
+            // Total main-thread CPU time under PlayerLoop (the game's work). When this is far
+            // below the frame time, the main thread spent the frame WAITING - VSync, GPU
+            // present, an idle stall - not doing fixable CPU work. The capture uses this to
+            // drop off-CPU false-positive hitches, whose off-thread wait markers never appear
+            // in this PlayerLoop tree at all (SPEC.md M4, NG5).
+            cpuMs = view.GetItemColumnDataAsFloat(startId, HierarchyFrameDataView.columnTotalTime);
+
             float keepMs = Mathf.Max(0.01f, frameMs * SelfTimeKeepFractionOfFrame);
 
             var all = new List<Marker>();

@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Off-CPU false-positive filter for frame_hitch (dogfooding finding): a hitch whose PlayerLoop
+  CPU time (`cpuTimeMs`) explains less than half the frame was spent waiting off the CPU
+  (VSync / GPU present / idle), not in fixable code, so it is dropped instead of surfaced
+  (SPEC.md M4/M6, NG5). The off-thread wait markers never appear in the PlayerLoop tree, so
+  the CPU-vs-frame ratio - not a marker match - is what catches the common VSync false hitch.
+
+### Added
+- `cpuTimeMs` on the event record: main-thread PlayerLoop CPU time for the frame. Compared
+  against `counters.frameTimeMs` it separates a real CPU stall (ratio near 1) from an off-CPU
+  wait (ratio low). Documented in the diagnosis guide, which also now clarifies that a
+  frame_hitch `budget` is a relative threshold (rolling baseline x multiplier), not a target
+  frame rate.
+
 ## [0.1.0] - 2026-07-03
 
 ### Added

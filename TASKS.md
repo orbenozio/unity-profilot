@@ -42,6 +42,15 @@ not to find magic absolute numbers.
       from ranking and a pure-wait hitch (no user marker) is dropped, not written (M4/M6).
 - [x] Fixed: `GC.Collect` collector was the dominant marker of a GC-pause hitch - now pruned,
       so the hitch maps to the allocator instead.
+- [x] Fixed (from real dogfooding, NeonRunner): VSync/GPU-present/warmup frames surfaced as
+      false frame_hitches - the off-thread wait markers are not in the PlayerLoop tree, so the
+      old wait-marker filter missed them. Now dropped by CPU-vs-frame ratio (`cpuTimeMs` <
+      half `frameTimeMs`); added `cpuTimeMs` to the record and clarified budget semantics in
+      the diagnosis guide (a hitch budget is baseline x multiplier, not a target frame rate).
+- [ ] Open: `WarmupFrames = 60` is too short for a real project - dogfooding showed hitch
+      dedup spanning frames 61-5332 (shader compile / asset load / JIT warmup). The off-CPU
+      filter drops the VSync warmup frames, but consider a longer/settling warmup for
+      main-thread warmup spikes, or flag early-frame hitches as warmup.
 - [ ] Open: an ISOLATED single-frame hitch can age out of the capture window
       (`FrameSearchWindow = 30` in `ProfilotEventCapture`) before the editor-side drain under
       very high frame rates, so a later unrelated frame gets captured. Fine at ~60fps live

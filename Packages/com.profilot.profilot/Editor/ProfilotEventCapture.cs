@@ -21,6 +21,11 @@ namespace Profilot.Editor
     {
         private const string SchemaVersion = "1";
 
+        // A frame_hitch whose PlayerLoop CPU work explains less than this fraction of the
+        // frame time was spent waiting (VSync / GPU present / idle), not doing fixable CPU
+        // work - dropped as an off-CPU false positive (SPEC.md M4/M6, NG5).
+        private const float OffCpuFraction = 0.5f;
+
         // How many recent profiler frames to scan when correlating a trip to its frame.
         // ProfilerDriver counts editor frames too, so its lastFrameIndex is not the frame
         // that tripped; we drain on the next editor update, so the real frame is only a few
@@ -104,6 +109,8 @@ namespace Profilot.Editor
             string topMarkersJson = "[]";
             string dominantMarker = string.Empty;
             string status = "ok";
+            float frameMs = 0f;
+            float cpuMs = 0f;
 
             HierarchyFrameDataView view = frameIndex >= 0
                 ? ProfilerDriver.GetHierarchyFrameDataView(frameIndex, 0,
@@ -115,7 +122,7 @@ namespace Profilot.Editor
                 if (view != null && view.valid)
                 {
                     MarkerTreeNormalizer.Build(view, signal.Type == "gc_spike",
-                        out markerTreeJson, out topMarkersJson, out dominantMarker, out _);
+                        out markerTreeJson, out topMarkersJson, out dominantMarker, out frameMs, out cpuMs);
                 }
                 else
                 {
@@ -129,12 +136,16 @@ namespace Profilot.Editor
                 view?.Dispose();
             }
 
-            // A frame_hitch whose only heavy markers were GPU/vsync waits or structural
-            // PlayerLoop phases has no user CPU work to blame: it is a GPU-bound / idle frame,
-            // a false positive (SPEC.md M4/M6), not a stall to fix. Drop it instead of writing
-            // noise. Only when the frame was read cleanly (status ok) - an error frame keeps
-            // its counter snapshot.
-            if (signal.Type == "frame_hitch" && status == "ok" && string.IsNullOrEmpty(dominantMarker))
+            // Drop off-CPU false-positive hitches (only when the frame was read cleanly - an
+            // error frame keeps its counter snapshot). Two shapes of the same non-issue:
+            //   - no user marker to blame at all (only waits / structural phases survived), or
+            //   - the main thread's PlayerLoop CPU work explains less than half the frame,
+            //     so the rest was spent waiting on VSync / the GPU / an idle stall.
+            // Neither is a CPU stall to fix (SPEC.md M4/M6, NG5). The off-thread wait markers
+            // never appear in the PlayerLoop tree, so this ratio - not a marker match - is what
+            // catches the common VSync / GPU-present false positive.
+            if (signal.Type == "frame_hitch" && status == "ok" &&
+                (string.IsNullOrEmpty(dominantMarker) || (frameMs > 0f && cpuMs < frameMs * OffCpuFraction)))
                 return;
 
             // Stable id per problem (type + dominant marker) so repeats overwrite one file.
@@ -151,7 +162,7 @@ namespace Profilot.Editor
             try
             {
                 json = BuildEventJson(eventId, frameIndex, requestedFrameIndex, signal, status,
-                    markerTreeJson, topMarkersJson, acc);
+                    markerTreeJson, topMarkersJson, cpuMs, acc);
             }
             catch (Exception e)
             {
@@ -238,7 +249,8 @@ namespace Profilot.Editor
         }
 
         private static string BuildEventJson(string eventId, int frameIndex, int requestedFrameIndex,
-            in TripSignal signal, string status, string markerTreeJson, string topMarkersJson, Accumulator acc)
+            in TripSignal signal, string status, string markerTreeJson, string topMarkersJson, float cpuMs,
+            Accumulator acc)
         {
             string severity = Severity(signal.Value, signal.Budget);
             string review = Reviewed.TryGetValue(eventId, out string r) ? r : "open";
@@ -256,6 +268,11 @@ namespace Profilot.Editor
             sb.Append(",\"frameIndex\":").Append(Json.Num(frameIndex));
             sb.Append(",\"requestedFrameIndex\":").Append(Json.Num(requestedFrameIndex));
             sb.Append(",\"frameIndexDelta\":").Append(Json.Num(requestedFrameIndex - frameIndex));
+
+            // Main-thread PlayerLoop CPU time for this frame. Compare against counters.frameTimeMs:
+            // when cpuTimeMs is far below the frame time, the frame was spent waiting off-CPU
+            // (VSync / GPU present / idle), not in fixable code (SPEC.md M4, NG5).
+            sb.Append(",\"cpuTimeMs\":").Append(Json.Num(cpuMs));
 
             sb.Append(",\"trigger\":{");
             sb.Append("\"type\":").Append(Json.Str(signal.Type));
