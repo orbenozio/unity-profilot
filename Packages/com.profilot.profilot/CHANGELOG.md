@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-04
+
 ### Fixed
 - Review feedback is now reversible and durable (two dogfooding gaps):
   - A "Reviewed" / "Not an issue" mark was a dead end - both buttons disabled, no way back.
