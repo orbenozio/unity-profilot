@@ -54,11 +54,34 @@ namespace Profilot.Editor
         /// Writes the event file atomically, then updates the latest.json pointer atomically.
         /// Order matters: the pointer must never reference an event that is not fully on disk.
         /// </summary>
+        // Bound on the number of event files. Dedup already collapses repeats of the same
+        // problem into one file, so this only bites when there are many DISTINCT problems - a
+        // long deep-capture session whose false hitches map to ever-changing markers. Keeps the
+        // store (and the window's load-all-and-parse per repaint) from growing without limit.
+        private const int MaxEvents = 200;
+
         public static void Write(string eventId, string eventJson, string latestPointerJson)
         {
             Directory.CreateDirectory(Root);
             WriteAtomic(EventPath(eventId), eventJson);
             WriteAtomic(LatestPath, latestPointerJson);
+            Prune();
+        }
+
+        private static void Prune()
+        {
+            string[] files = Directory.GetFiles(Root, "evt_*.json");
+            if (files.Length <= MaxEvents)
+                return;
+
+            // Oldest first (by last write), then delete the excess so the newest MaxEvents stay.
+            System.Array.Sort(files, (a, b) => File.GetLastWriteTimeUtc(a).CompareTo(File.GetLastWriteTimeUtc(b)));
+            int toDelete = files.Length - MaxEvents;
+            for (int i = 0; i < toDelete; i++)
+            {
+                try { File.Delete(files[i]); }
+                catch { /* another reader may hold it; it will be pruned next time */ }
+            }
         }
 
         /// <summary>

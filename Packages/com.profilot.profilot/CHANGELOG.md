@@ -6,6 +6,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-07-04
+
+### Changed
+- Deep capture (keeping the Unity Profiler recording during Play) is now OFF by default. It
+  was the real cause of the Editor slowing down over a session: recording the full marker
+  hierarchy every frame is a heavy per-frame cost - an observer effect that itself produced
+  the "24ms frame, ~1.5ms CPU" false hitches, which then mapped to ever-changing markers and
+  proliferated event files and console logs, compounding over time. The cheap tripwire
+  (ProfilerRecorder counters) never needed the profiler and keeps catching spikes at full
+  Editor speed; arm deep capture (a toggle in the window) only when you want the marker->code
+  mapping (SPEC.md M8/G5 - the two-layer design as intended).
+
+### Added
+- A "Deep capture" toggle in the window (persisted). Off: cheap counter-only events
+  (`status: "counters_only"`, no marker tree). On: full marker tree + code mapping, slower.
+- Event store cap (200 files): bounds accumulation from a long deep session whose distinct
+  problems would otherwise grow the store and the window's per-repaint load without limit.
+
+### Fixed
+- The notification "flash the window" no longer calls GetWindow (which opened/focused the
+  window mid-Play and stalled the frame by stealing focus from the Game View); it now only
+  flashes an already-open Profilot window.
+
 ## [0.1.3] - 2026-07-04
 
 ### Fixed

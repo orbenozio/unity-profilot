@@ -16,7 +16,7 @@ namespace Profilot.PlayTests
         // per-frame allocations (its TestRunnerCoroutine spikes ~220KB), so PickBestFrame maps
         // the gc_spike back here - but small enough that the GC collection pause stays under
         // the tripwire's hitch floor, so the frame is classified gc_spike and not frame_hitch.
-        public int bytesPerFrame = 500_000;
+        public int bytesPerFrame = 1_000_000;
         private long _sink;
 
         // Bug on purpose: a fresh heap allocation every frame (the textbook "allocating in

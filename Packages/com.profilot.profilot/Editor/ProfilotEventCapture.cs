@@ -110,6 +110,30 @@ namespace Profilot.Editor
             return Reviewed.TryGetValue(eventId, out string s) && s != "open";
         }
 
+        private const string DeepCaptureKey = "Profilot.DeepCapture";
+
+        /// <summary>
+        /// Deep capture keeps the Unity Profiler recording during Play so a trip can fetch the
+        /// full marker tree and map the problem to code. OFF by default: recording the whole
+        /// hierarchy every frame is a heavy per-frame Editor cost - an observer effect that by
+        /// itself creates frame hitches (the "24ms frame, 1.5ms CPU" false positives). With it
+        /// off, the cheap tripwire (ProfilerRecorder counters, which do NOT need the profiler
+        /// enabled) still catches spikes and reports the counters; you just do not get the
+        /// marker tree until you arm it. This is the two-layer design the SPEC intended -
+        /// cheap always-on, pay only when you want the deep picture (SPEC.md M8, G5). Persisted.
+        /// </summary>
+        public static bool DeepCapture
+        {
+            get { return EditorPrefs.GetBool(DeepCaptureKey, false); }
+            set
+            {
+                EditorPrefs.SetBool(DeepCaptureKey, value);
+                // Apply immediately so toggling mid-Play takes effect from now on.
+                if (EditorApplication.isPlaying)
+                    Profiler.enabled = value;
+            }
+        }
+
         private static void OnPlayModeChanged(PlayModeStateChange change)
         {
             if (change != PlayModeStateChange.EnteredPlayMode)
@@ -117,10 +141,11 @@ namespace Profilot.Editor
 
             _sessionId = Guid.NewGuid().ToString("N").Substring(0, 8);
 
-            // The full-frame fetch needs the profiler to be recording. The cheap tripwire
-            // (counters) does not, but ProfilerDriver only has frames if profiling is on.
-            // In the Editor dev scenario this overhead is acceptable (SPEC.md NG3).
-            Profiler.enabled = true;
+            // Only arm the full profiler if the user opted into deep capture. The cheap
+            // tripwire (counters) runs regardless; the profiler is what costs per frame, so we
+            // leave it off by default (SPEC.md M8 - the tripwire honors the overhead budget,
+            // the profiler does not).
+            Profiler.enabled = DeepCapture;
 
             // Everything already in the store is from a previous run - mark it stale before
             // this session starts writing fresh events over it (SPEC.md section 15).
@@ -147,39 +172,47 @@ namespace Profilot.Editor
 
         private static void Capture(in TripSignal signal)
         {
+            // Only do the expensive frame fetch + 30-frame scan when deep capture is armed.
+            // Otherwise this is the cheap counter-only path: no profiler recording, no marker
+            // tree, no per-trip cost - just the counter snapshot the tripwire already sampled.
+            bool deep = Profiler.enabled;
+
             int requestedFrameIndex = ProfilerDriver.lastFrameIndex;
-            int frameIndex = PickBestFrame(signal, requestedFrameIndex);
+            int frameIndex = deep ? PickBestFrame(signal, requestedFrameIndex) : requestedFrameIndex;
 
             // Fetch + normalize first: the dominant marker is part of the dedup key.
             string markerTreeJson = "null";
             string topMarkersJson = "[]";
             string dominantMarker = string.Empty;
-            string status = "ok";
+            string status = deep ? "ok" : "counters_only";
             float frameMs = 0f;
             float cpuMs = 0f;
 
-            HierarchyFrameDataView view = frameIndex >= 0
-                ? ProfilerDriver.GetHierarchyFrameDataView(frameIndex, 0,
-                    HierarchyFrameDataView.ViewModes.MergeSamplesWithTheSameName,
-                    HierarchyFrameDataView.columnTotalTime, false)
-                : null;
-            try
+            if (deep)
             {
-                if (view != null && view.valid)
+                HierarchyFrameDataView view = frameIndex >= 0
+                    ? ProfilerDriver.GetHierarchyFrameDataView(frameIndex, 0,
+                        HierarchyFrameDataView.ViewModes.MergeSamplesWithTheSameName,
+                        HierarchyFrameDataView.columnTotalTime, false)
+                    : null;
+                try
                 {
-                    MarkerTreeNormalizer.Build(view, signal.Type == "gc_spike",
-                        out markerTreeJson, out topMarkersJson, out dominantMarker, out frameMs, out cpuMs);
+                    if (view != null && view.valid)
+                    {
+                        MarkerTreeNormalizer.Build(view, signal.Type == "gc_spike",
+                            out markerTreeJson, out topMarkersJson, out dominantMarker, out frameMs, out cpuMs);
+                    }
+                    else
+                    {
+                        // The frame was pushed out of the profiler ring buffer before we could
+                        // read it (SPEC.md section 15). The counter snapshot still describes it.
+                        status = "error";
+                    }
                 }
-                else
+                finally
                 {
-                    // The frame was pushed out of the profiler ring buffer before we could
-                    // read it (SPEC.md section 15). The counter snapshot still describes it.
-                    status = "error";
+                    view?.Dispose();
                 }
-            }
-            finally
-            {
-                view?.Dispose();
             }
 
             // Drop off-CPU false-positive hitches (only when the frame was read cleanly - an

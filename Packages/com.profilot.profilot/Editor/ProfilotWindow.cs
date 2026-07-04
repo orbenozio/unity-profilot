@@ -66,6 +66,7 @@ namespace Profilot.Editor
         private void OnGUI()
         {
             DrawTitle();
+            DrawCaptureMode();
             DrawNotificationSettings();
 
             if (!EditorApplication.isPlaying)
@@ -79,6 +80,25 @@ namespace Profilot.Editor
                 DrawQuiet();
             else
                 DrawEvents(events);
+        }
+
+        private void DrawCaptureMode()
+        {
+            bool deep = ProfilotEventCapture.DeepCapture;
+            bool now = EditorGUILayout.ToggleLeft(
+                new GUIContent("Deep capture (map to code, slower)",
+                    "On: keeps the Unity Profiler recording so a caught problem maps to the exact " +
+                    "code - at a real per-frame Editor cost. Off (default): cheap always-on " +
+                    "catching with counters only, full Editor speed. Arm it when you want to diagnose."),
+                deep);
+            if (now != deep)
+                ProfilotEventCapture.DeepCapture = now;
+
+            EditorGUILayout.LabelField(
+                deep ? "Deep: profiler on - maps to code, slower Editor Play." :
+                       "Cheap: counters only, full speed. Enable to map problems to code.",
+                EditorStyles.miniLabel);
+            DrawSeparator();
         }
 
         private void DrawNotificationSettings()
@@ -158,7 +178,13 @@ namespace Profilot.Editor
             if (e.stale)
                 EditorGUILayout.LabelField("(from a previous session - frame may no longer match)", EditorStyles.miniLabel);
 
-            string marker = e.topMarkers != null && e.topMarkers.Length > 0 ? e.topMarkers[0].name : "(no marker - data may be partial)";
+            string marker;
+            if (e.topMarkers != null && e.topMarkers.Length > 0)
+                marker = e.topMarkers[0].name;
+            else if (e.status == "counters_only")
+                marker = "(no marker - deep capture off; enable to map to code)";
+            else
+                marker = "(no marker - data may be partial)";
             EditorGUILayout.LabelField($"top: {marker}", EditorStyles.miniLabel);
             EditorGUILayout.LabelField($"{t.metric} {t.value:0.##} (budget {t.budget:0.##})", EditorStyles.miniLabel);
 

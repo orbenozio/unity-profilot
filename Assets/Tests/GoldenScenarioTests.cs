@@ -33,8 +33,13 @@ namespace Profilot.PlayTests
         // whole later test - and the runner's own yield machinery (CoroutinesDelayedCalls)
         // trips gc_spike every frame, keeping that cooldown consumed. Zeroing the cooldown
         // makes each scenario's trip fire on its own frames, independent of the others.
-        private static void DisableTripwireRateLimit()
+        private static void ArmProfilot()
         {
+            // Deep capture is off by default (the profiler is a heavy per-frame Editor cost).
+            // These scenarios assert marker -> code mapping, which needs the marker tree, so
+            // turn the profiler on for the test. (The capture keys off Profiler.enabled.)
+            UnityEngine.Profiling.Profiler.enabled = true;
+
             // The tripwire GameObject is HideFlags.HideAndDontSave, which FindObjectOfType
             // silently skips - use Resources.FindObjectsOfTypeAll, which includes hidden
             // objects, or the cooldown is never actually zeroed.
@@ -70,10 +75,10 @@ namespace Profilot.PlayTests
         public IEnumerator GcSpike_is_caught_and_maps_to_the_allocating_method()
         {
             ClearStore();
-            DisableTripwireRateLimit();
+            ArmProfilot();
 
             var go = new GameObject("gc-spike-scenario");
-            go.AddComponent<GcSpikeScenario>().bytesPerFrame = 500_000;
+            go.AddComponent<GcSpikeScenario>().bytesPerFrame = 1_000_000;
 
             // Past warm-up (60 frames) + a trip + the editor-side capture on the next update.
             for (int i = 0; i < 200; i++)
@@ -90,7 +95,7 @@ namespace Profilot.PlayTests
         public IEnumerator FrameHitch_is_caught_and_maps_to_the_stalling_method()
         {
             ClearStore();
-            DisableTripwireRateLimit();
+            ArmProfilot();
 
             var go = new GameObject("frame-hitch-scenario");
             var s = go.AddComponent<SyncHitchScenario>();

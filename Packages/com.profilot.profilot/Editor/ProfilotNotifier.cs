@@ -79,13 +79,16 @@ namespace Profilot.Editor
 
         private static void TryWindowFlash(string headline)
         {
-            // Bring the Profilot window forward (opening it if needed) so the caught-issue list
-            // and its Copy-diagnose buttons are right there.
+            // Flash the Profilot window ONLY if it is already open. Deliberately does not call
+            // GetWindow - opening / focusing an EditorWindow during Play steals focus from the
+            // Game View and stalls the frame (an observer-effect the tool must not cause).
             try
             {
-                var w = EditorWindow.GetWindow<ProfilotWindow>(false, "Profilot", true);
-                w.ShowNotification(new GUIContent($"⚠ {headline}"), 4.0);
-                w.Repaint();
+                foreach (var obj in Resources.FindObjectsOfTypeAll<ProfilotWindow>())
+                {
+                    obj.ShowNotification(new GUIContent($"⚠ {headline}"), 4.0);
+                    obj.Repaint();
+                }
             }
             catch { /* best effort */ }
         }
