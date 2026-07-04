@@ -55,7 +55,14 @@ namespace Profilot.Editor
         /// <summary>Called by the window when the user marks an event (SPEC.md JTBD-8).</summary>
         internal static void MarkReviewed(string eventId, string status)
         {
-            Reviewed[eventId] = status;
+            // "open" is the absence of a decision (Reopen) - drop it from the persisted map so
+            // notifications resume; any other status is remembered across sessions.
+            if (status == "open")
+                Reviewed.Remove(eventId);
+            else
+                Reviewed[eventId] = status;
+
+            SaveReviews();
             ProfilotEventStore.SetReviewStatus(eventId, status);
         }
 
@@ -63,6 +70,44 @@ namespace Profilot.Editor
         {
             EditorApplication.update += OnUpdate;
             EditorApplication.playModeStateChanged += OnPlayModeChanged;
+            LoadReviews();
+        }
+
+        [System.Serializable] private class ReviewRecord { public string id; public string status; }
+        [System.Serializable] private class ReviewFile { public List<ReviewRecord> items = new List<ReviewRecord>(); }
+
+        private static void LoadReviews()
+        {
+            Reviewed.Clear();
+            string json = ProfilotEventStore.ReadReviews();
+            if (string.IsNullOrEmpty(json))
+                return;
+            try
+            {
+                ReviewFile f = JsonUtility.FromJson<ReviewFile>(json);
+                if (f?.items != null)
+                    foreach (ReviewRecord it in f.items)
+                        if (!string.IsNullOrEmpty(it.id) && !string.IsNullOrEmpty(it.status))
+                            Reviewed[it.id] = it.status;
+            }
+            catch { /* a corrupt reviews file should never break capture */ }
+        }
+
+        private static void SaveReviews()
+        {
+            var f = new ReviewFile();
+            foreach (var kv in Reviewed)
+                f.items.Add(new ReviewRecord { id = kv.Key, status = kv.Value });
+            try { ProfilotEventStore.WriteReviews(JsonUtility.ToJson(f)); }
+            catch { /* best effort */ }
+        }
+
+        // A problem the user has given feedback on (reviewed or not-an-issue) is muted: no more
+        // notifications until they Reopen it. Notifications are only for open, un-triaged
+        // problems.
+        private static bool IsMuted(string eventId)
+        {
+            return Reviewed.TryGetValue(eventId, out string s) && s != "open";
         }
 
         private static void OnPlayModeChanged(PlayModeStateChange change)
@@ -83,7 +128,8 @@ namespace Profilot.Editor
 
             ProfilotTripChannel.Clear();
             Dedup.Clear();
-            Reviewed.Clear();
+            // Reviewed is NOT cleared - review decisions persist across sessions (loaded from
+            // disk in the static ctor, saved on every change), so a muted problem stays muted.
         }
 
         private static void OnUpdate()
@@ -174,8 +220,9 @@ namespace Profilot.Editor
             ProfilotEventStore.Write(eventId, json, BuildLatestPointer(eventId));
 
             // Proactive, cheap alert - only the first time a distinct problem is caught this
-            // session (repeats already fold into the dedup count), never per frame, no LLM.
-            if (isNewProblem)
+            // session (repeats already fold into the dedup count), never per frame, no LLM, and
+            // never for a problem the user has muted via Reviewed / Not-an-issue.
+            if (isNewProblem && !IsMuted(eventId))
                 ProfilotNotifier.OnProblemCaught(eventId, signal.Type, dominantMarker, acc.Count);
         }
 

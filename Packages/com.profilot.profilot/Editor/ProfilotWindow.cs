@@ -162,25 +162,35 @@ namespace Profilot.Editor
             EditorGUILayout.LabelField($"top: {marker}", EditorStyles.miniLabel);
             EditorGUILayout.LabelField($"{t.metric} {t.value:0.##} (budget {t.budget:0.##})", EditorStyles.miniLabel);
 
-            EditorGUILayout.BeginHorizontal();
             if (GUILayout.Button("Copy diagnose command", GUILayout.Height(22)))
             {
                 EditorGUIUtility.systemCopyBuffer = $"profilot diagnose --id {e.eventId}";
                 ShowNotification(new GUIContent("Copied - paste into Claude Code"));
             }
 
-            bool reviewed = e.reviewStatus == "reviewed" || e.reviewStatus == "not_a_real_issue";
-            using (new EditorGUI.DisabledScope(reviewed))
+            bool marked = e.reviewStatus == "reviewed" || e.reviewStatus == "not_a_real_issue";
+
+            // All actions stay available so a mark is never a dead end: switch between the two,
+            // or Reopen back to open (which resumes notifications). SPEC.md JTBD-8.
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("Reviewed", GUILayout.Height(22)))
+                Mark(e.eventId, "reviewed");
+            if (GUILayout.Button("Not an issue", GUILayout.Height(22)))
+                Mark(e.eventId, "not_a_real_issue");
+            using (new EditorGUI.DisabledScope(!marked))
             {
-                if (GUILayout.Button("Reviewed", GUILayout.Height(22), GUILayout.Width(80)))
-                    Mark(e.eventId, "reviewed");
-                if (GUILayout.Button("Not an issue", GUILayout.Height(22), GUILayout.Width(90)))
-                    Mark(e.eventId, "not_a_real_issue");
+                if (GUILayout.Button("Reopen", GUILayout.Height(22), GUILayout.Width(70)))
+                    Mark(e.eventId, "open");
             }
             EditorGUILayout.EndHorizontal();
 
-            if (reviewed)
-                EditorGUILayout.LabelField($"marked: {e.reviewStatus}", EditorStyles.miniLabel);
+            if (marked)
+            {
+                string note = e.reviewStatus == "not_a_real_issue"
+                    ? "not an issue - muted, won't notify (Reopen to resume)"
+                    : "reviewed - muted, won't notify (Reopen to resume)";
+                EditorGUILayout.LabelField(note, EditorStyles.miniLabel);
+            }
 
             EditorGUILayout.EndVertical();
             EditorGUILayout.Space(2);

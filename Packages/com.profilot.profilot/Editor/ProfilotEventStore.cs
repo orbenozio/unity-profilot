@@ -30,6 +30,26 @@ namespace Profilot.Editor
             return Path.Combine(Root, eventId + ".json");
         }
 
+        // Persisted user review decisions (eventId -> status). Kept next to the events dir (not
+        // inside it, so the evt_*.json glob never picks it up) so that "reviewed" and
+        // "not_a_real_issue" survive Play sessions and editor restarts, instead of resetting to
+        // "open" every session (SPEC.md JTBD-8).
+        public static string ReviewsPath
+        {
+            get { return Path.Combine(Directory.GetCurrentDirectory(), "Library", "Profilot", "reviews.json"); }
+        }
+
+        public static string ReadReviews()
+        {
+            return File.Exists(ReviewsPath) ? File.ReadAllText(ReviewsPath) : null;
+        }
+
+        public static void WriteReviews(string json)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(ReviewsPath));
+            WriteAtomic(ReviewsPath, json);
+        }
+
         /// <summary>
         /// Writes the event file atomically, then updates the latest.json pointer atomically.
         /// Order matters: the pointer must never reference an event that is not fully on disk.

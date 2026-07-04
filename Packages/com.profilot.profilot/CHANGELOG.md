@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Review feedback is now reversible and durable (two dogfooding gaps):
+  - A "Reviewed" / "Not an issue" mark was a dead end - both buttons disabled, no way back.
+    There is now a "Reopen" button that returns a problem to open (and resumes notifications),
+    and the two mark buttons stay enabled so you can switch freely.
+  - "Not an issue" did not actually mute anything: the decision was cleared every Play session
+    and the event reset to "open", so it notified again next run. Decisions now persist to
+    `Library/Profilot/reviews.json` (survive sessions and editor restarts), and a problem the
+    user marked reviewed or not-an-issue is muted - no further notifications until Reopen.
+
 ## [0.1.2] - 2026-07-04
 
 ### Added
