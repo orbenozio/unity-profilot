@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-07-04
+
+### Changed
+- Deep capture (marker->code mapping) is ON by default again - it is the whole point of the
+  tool. v0.1.4 turned it off on the theory that the always-on profiler was the Editor
+  slowdown; a direct measurement disproved that: `Profiler.enabled` adds ~0.1ms/frame
+  (negligible) in a marker-rich scene. The real costs were the per-trip capture work and
+  event/log accumulation over time, which are fixed directly - so mapping stays on and the
+  Editor stays smooth. The toggle remains for anyone who wants counter-only max speed.
+- Per-trip capture cost cut: the frame-correlation scan builds a HierarchyFrameDataView per
+  frame, so its window is reduced from 30 to 10 (still well above the observed frameIndexDelta)
+  to remove the periodic capture hitch.
+
 ## [0.1.4] - 2026-07-04
 
 ### Changed

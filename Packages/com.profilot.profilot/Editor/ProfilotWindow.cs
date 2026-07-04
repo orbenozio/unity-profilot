@@ -86,17 +86,17 @@ namespace Profilot.Editor
         {
             bool deep = ProfilotEventCapture.DeepCapture;
             bool now = EditorGUILayout.ToggleLeft(
-                new GUIContent("Deep capture (map to code, slower)",
-                    "On: keeps the Unity Profiler recording so a caught problem maps to the exact " +
-                    "code - at a real per-frame Editor cost. Off (default): cheap always-on " +
-                    "catching with counters only, full Editor speed. Arm it when you want to diagnose."),
+                new GUIContent("Deep capture (map to code)",
+                    "On (default): keeps the Unity Profiler recording so a caught problem maps to " +
+                    "the exact code. The profiler adds negligible per-frame cost. Turn off only for " +
+                    "maximum Editor speed, giving up marker->code mapping (counter-only events)."),
                 deep);
             if (now != deep)
                 ProfilotEventCapture.DeepCapture = now;
 
             EditorGUILayout.LabelField(
-                deep ? "Deep: profiler on - maps to code, slower Editor Play." :
-                       "Cheap: counters only, full speed. Enable to map problems to code.",
+                deep ? "Deep: profiler on - problems map to code." :
+                       "Counters only: no code mapping. Turn on Deep capture to map problems to code.",
                 EditorStyles.miniLabel);
             DrawSeparator();
         }

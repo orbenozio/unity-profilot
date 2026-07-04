@@ -31,7 +31,10 @@ namespace Profilot.Editor
         // that tripped; we drain on the next editor update, so the real frame is only a few
         // back. We pick by signal (the frame whose GC alloc / time matches the trigger),
         // not by index, which is robust to that offset (SPEC.md section 15, ring buffer).
-        private const int FrameSearchWindow = 30;
+        // Each scanned frame builds a HierarchyFrameDataView, so this is the per-trip cost -
+        // kept small (the observed frameIndexDelta is well under this) so a trip is cheap and
+        // does not produce a periodic capture hitch.
+        private const int FrameSearchWindow = 10;
 
         private static readonly List<TripSignal> Buffer = new List<TripSignal>();
         private static string _sessionId = "editor";
@@ -114,17 +117,16 @@ namespace Profilot.Editor
 
         /// <summary>
         /// Deep capture keeps the Unity Profiler recording during Play so a trip can fetch the
-        /// full marker tree and map the problem to code. OFF by default: recording the whole
-        /// hierarchy every frame is a heavy per-frame Editor cost - an observer effect that by
-        /// itself creates frame hitches (the "24ms frame, 1.5ms CPU" false positives). With it
-        /// off, the cheap tripwire (ProfilerRecorder counters, which do NOT need the profiler
-        /// enabled) still catches spikes and reports the counters; you just do not get the
-        /// marker tree until you arm it. This is the two-layer design the SPEC intended -
-        /// cheap always-on, pay only when you want the deep picture (SPEC.md M8, G5). Persisted.
+        /// full marker tree and map the problem to code - the core value of the tool. ON by
+        /// default: turning the profiler on was measured to add negligible per-frame cost
+        /// (~0.1ms in a marker-rich scene), so it is NOT the source of the Editor slowdown that
+        /// mattered - that was the per-trip capture cost and event accumulation, fixed
+        /// separately. Turn it OFF only if you want maximum Editor speed and are willing to give
+        /// up marker->code mapping (you still get counter-only events). Persisted per-user.
         /// </summary>
         public static bool DeepCapture
         {
-            get { return EditorPrefs.GetBool(DeepCaptureKey, false); }
+            get { return EditorPrefs.GetBool(DeepCaptureKey, true); }
             set
             {
                 EditorPrefs.SetBool(DeepCaptureKey, value);
@@ -141,10 +143,9 @@ namespace Profilot.Editor
 
             _sessionId = Guid.NewGuid().ToString("N").Substring(0, 8);
 
-            // Only arm the full profiler if the user opted into deep capture. The cheap
-            // tripwire (counters) runs regardless; the profiler is what costs per frame, so we
-            // leave it off by default (SPEC.md M8 - the tripwire honors the overhead budget,
-            // the profiler does not).
+            // Arm the profiler for marker->code mapping (on by default - it was measured to
+            // add negligible per-frame cost). Off only if the user opted into counter-only mode
+            // for maximum Editor speed.
             Profiler.enabled = DeepCapture;
 
             // Everything already in the store is from a previous run - mark it stale before
