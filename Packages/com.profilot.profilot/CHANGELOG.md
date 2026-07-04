@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-04
+
 ### Added
 - Proactive notifications (`ProfilotNotifier`): when a NEW problem is first caught in a Play
   session, Profilot alerts you instead of waiting for you to check the window. Fires once per
