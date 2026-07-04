@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Proactive notifications (`ProfilotNotifier`): when a NEW problem is first caught in a Play
+  session, Profilot alerts you instead of waiting for you to check the window. Fires once per
+  distinct problem (the dedup folds repeats), never per frame, and never touches an LLM -
+  diagnosis stays on-demand. Four independently toggleable channels, persisted per-user in
+  EditorPrefs and configured from a "Notifications" foldout in the window: a Console warning
+  carrying the ready `profilot diagnose --id` command (on), a Game View toast (on), flashing
+  the Profilot window to the front (on), and a sound (opt-in, off by default).
+
 ## [0.1.1] - 2026-07-03
 
 ### Changed

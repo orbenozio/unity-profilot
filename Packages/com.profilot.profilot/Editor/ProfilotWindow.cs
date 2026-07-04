@@ -41,6 +41,7 @@ namespace Profilot.Editor
 
         private Vector2 _scroll;
         private double _lastRepaint;
+        private bool _showSettings;
 
         [MenuItem("Tools/Profilot/Window")]
         private static void Open()
@@ -65,6 +66,7 @@ namespace Profilot.Editor
         private void OnGUI()
         {
             DrawTitle();
+            DrawNotificationSettings();
 
             if (!EditorApplication.isPlaying)
             {
@@ -77,6 +79,22 @@ namespace Profilot.Editor
                 DrawQuiet();
             else
                 DrawEvents(events);
+        }
+
+        private void DrawNotificationSettings()
+        {
+            _showSettings = EditorGUILayout.Foldout(_showSettings, "Notifications", true);
+            if (!_showSettings)
+                return;
+
+            EditorGUI.indentLevel++;
+            ProfilotNotifier.Console = EditorGUILayout.ToggleLeft("Console warning", ProfilotNotifier.Console);
+            ProfilotNotifier.Toast = EditorGUILayout.ToggleLeft("Game View toast", ProfilotNotifier.Toast);
+            ProfilotNotifier.WindowFlash = EditorGUILayout.ToggleLeft("Flash this window", ProfilotNotifier.WindowFlash);
+            ProfilotNotifier.Sound = EditorGUILayout.ToggleLeft("Sound", ProfilotNotifier.Sound);
+            EditorGUILayout.LabelField("Fires once per new problem, per Play session. No LLM cost.", EditorStyles.miniLabel);
+            EditorGUI.indentLevel--;
+            DrawSeparator();
         }
 
         private void DrawTitle()

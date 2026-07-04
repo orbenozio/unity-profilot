@@ -151,7 +151,8 @@ namespace Profilot.Editor
             // Stable id per problem (type + dominant marker) so repeats overwrite one file.
             string eventId = $"evt_{signal.Type}_{Slug(dominantMarker)}";
 
-            if (!Dedup.TryGetValue(eventId, out Accumulator acc))
+            bool isNewProblem = !Dedup.TryGetValue(eventId, out Accumulator acc);
+            if (isNewProblem)
             {
                 acc = new Accumulator { Count = 0, FirstSeenFrame = signal.FrameCount };
                 Dedup[eventId] = acc;
@@ -171,6 +172,11 @@ namespace Profilot.Editor
             }
 
             ProfilotEventStore.Write(eventId, json, BuildLatestPointer(eventId));
+
+            // Proactive, cheap alert - only the first time a distinct problem is caught this
+            // session (repeats already fold into the dedup count), never per frame, no LLM.
+            if (isNewProblem)
+                ProfilotNotifier.OnProblemCaught(eventId, signal.Type, dominantMarker, acc.Count);
         }
 
         /// <summary>
