@@ -20,6 +20,7 @@ namespace Profilot.Editor
             public string status;
             public string reviewStatus;
             public bool stale;
+            public string sessionId;
             public string capturedAt;
             public Trigger trigger;
             public Dedup dedup;
@@ -153,6 +154,7 @@ namespace Profilot.Editor
             GUI.color = new Color(0.95f, 0.7f, 0.3f);
             EditorGUILayout.LabelField($"⚠  {events.Count} issue(s) caught", EditorStyles.miniBoldLabel);
             GUI.color = prev;
+            EditorGUILayout.LabelField($"This run: {ProfilotEventCapture.CurrentSessionId}", EditorStyles.miniLabel);
 
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
             for (int i = 0; i < events.Count; i++)
@@ -175,8 +177,10 @@ namespace Profilot.Editor
             EditorGUILayout.LabelField(headline, EditorStyles.boldLabel);
             GUI.color = prev;
 
-            if (e.stale)
-                EditorGUILayout.LabelField("(from a previous session - frame may no longer match)", EditorStyles.miniLabel);
+            string runNote = e.stale
+                ? $"earlier run {e.sessionId} - did not recur this run (frame may no longer match)"
+                : $"this run {e.sessionId}";
+            EditorGUILayout.LabelField(runNote, EditorStyles.miniLabel);
 
             string marker;
             if (e.topMarkers != null && e.topMarkers.Length > 0)

@@ -9,7 +9,7 @@ It never calls an LLM and never writes to the store.
 ```
 profilot diagnose --last        # the most recently captured event (full record)
 profilot diagnose --id <eventId> # a specific event
-profilot list                    # summaries of the events in the store
+profilot list                    # summaries of the events (incl. sessionId - the run each is from)
 profilot status                  # is the store present, how many events, what is latest
 ```
 

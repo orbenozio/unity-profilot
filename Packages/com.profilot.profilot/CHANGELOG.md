@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-07-05
+
+### Added
+- Distinguish events by run. Each event already carries a `sessionId` (a fresh id per Play
+  run); it is now surfaced so you can tell which run an event is from: the CLI `list` includes
+  `sessionId`, and the window shows the current run id plus a per-event "this run" vs "earlier
+  run" note (using the existing `stale` flag). This also serves before/after a fix - re-run and
+  a problem that goes stale (did not recur) is likely fixed, while a still-fresh one persists.
+
 ## [0.1.5] - 2026-07-04
 
 ### Changed

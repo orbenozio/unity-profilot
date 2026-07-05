@@ -51,6 +51,9 @@ function summarize(rec) {
     capturedAt: rec.capturedAt,
     reviewStatus: rec.reviewStatus,
     stale: rec.stale,
+    // The run that captured this record. stale:false is the current run; stale:true is an
+    // earlier run whose problem did not recur. Lets a reader group events by run.
+    sessionId: rec.sessionId,
   };
 }
 

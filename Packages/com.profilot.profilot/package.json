@@ -1,6 +1,6 @@
 {
   "name": "com.profilot.profilot",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "displayName": "Profilot",
   "description": "Copilot for the Unity Profiler. A low-overhead tripwire catches performance spikes (frame hitches, GC allocations, draw calls) during Play Mode, captures the full problem frame, and hands structured data to Claude Code for diagnosis and a suggested fix. Profiler markers are available only in the Editor and in development builds.",
   "unity": "6000.3",

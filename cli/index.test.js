@@ -87,6 +87,7 @@ test('list: summaries, newest first', () => {
   assert.equal(r.events[0].eventId, 'evt_new_frame_hitch');
   assert.equal(r.events[0].type, 'frame_hitch');
   assert.equal(r.events[0].reviewStatus, 'open');
+  assert.equal(r.events[0].sessionId, 't'); // the run that captured it, so events group by run
 });
 
 test('diagnose --last: full latest record incl. nested markerTree', () => {

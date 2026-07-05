@@ -39,6 +39,10 @@ namespace Profilot.Editor
         private static readonly List<TripSignal> Buffer = new List<TripSignal>();
         private static string _sessionId = "editor";
 
+        /// <summary>The id of the current Play run, so the window can mark which events are from
+        /// this run versus an earlier one.</summary>
+        internal static string CurrentSessionId => _sessionId;
+
         // Session dedup (SPEC.md section 15): repeats of the same problem (type + dominant
         // marker) fold into one rolling record with a growing count, instead of one file per
         // frame. Kept in memory so we never have to parse the JSON back; the file is just
