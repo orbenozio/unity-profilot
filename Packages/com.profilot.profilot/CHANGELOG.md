@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-07-06
+
+### Changed
+- The run id (`sessionId`) is now the run's start date and time (e.g. `2026-07-06 14:32:05`)
+  instead of an opaque hash, so it reads meaningfully in the window and CLI.
+
+### Added
+- The window keeps the last run's results visible after Play stops (a "Stopped - N result(s)
+  from the last run" view), so you can go handle them without being back in Play Mode.
+- Window toolbar: "Open folder" (reveals `Library/Profilot/events`), "Clear earlier runs"
+  (deletes stale results from prior runs, keeps the current run), and "Clear all" (with a
+  confirm).
+- Age-based retention: event results older than 30 days are dropped on play start.
+
 ## [0.1.6] - 2026-07-05
 
 ### Added

@@ -119,6 +119,46 @@ namespace Profilot.Editor
             }
         }
 
+        /// <summary>Delete every captured event and the latest pointer (the user clearing the
+        /// store from the window). Local dev data under Library/, always regenerable.</summary>
+        public static void ClearAll()
+        {
+            if (!Directory.Exists(Root))
+                return;
+            foreach (string f in Directory.GetFiles(Root, "evt_*.json"))
+            {
+                try { File.Delete(f); } catch { /* ignore */ }
+            }
+            try { if (File.Exists(LatestPath)) File.Delete(LatestPath); } catch { /* ignore */ }
+        }
+
+        /// <summary>Delete only stale events - the leftovers from earlier runs that did not
+        /// recur this run - keeping the current run's results.</summary>
+        public static void ClearStale()
+        {
+            if (!Directory.Exists(Root))
+                return;
+            foreach (string f in Directory.GetFiles(Root, "evt_*.json"))
+            {
+                try { if (File.ReadAllText(f).Contains("\"stale\":true")) File.Delete(f); }
+                catch { /* ignore */ }
+            }
+        }
+
+        /// <summary>Age-based retention: drop event files older than maxDays (by last write),
+        /// so results from long-gone runs do not pile up. Called on each play start.</summary>
+        public static void PruneByAge(int maxDays)
+        {
+            if (!Directory.Exists(Root))
+                return;
+            System.DateTime cutoff = System.DateTime.UtcNow.AddDays(-maxDays);
+            foreach (string f in Directory.GetFiles(Root, "evt_*.json"))
+            {
+                try { if (File.GetLastWriteTimeUtc(f) < cutoff) File.Delete(f); }
+                catch { /* ignore */ }
+            }
+        }
+
         private static void WriteAtomic(string path, string content)
         {
             string tmp = path + ".tmp";

@@ -119,6 +119,9 @@ namespace Profilot.Editor
 
         private const string DeepCaptureKey = "Profilot.DeepCapture";
 
+        // Event results older than this (by file age) are dropped on play start.
+        private const int RetentionDays = 30;
+
         /// <summary>
         /// Deep capture keeps the Unity Profiler recording during Play so a trip can fetch the
         /// full marker tree and map the problem to code - the core value of the tool. ON by
@@ -145,7 +148,13 @@ namespace Profilot.Editor
             if (change != PlayModeStateChange.EnteredPlayMode)
                 return;
 
-            _sessionId = Guid.NewGuid().ToString("N").Substring(0, 8);
+            // Human-readable run id: the local date + time the run started, so the window and
+            // CLI show "2026-07-06 14:32:05" instead of an opaque hash.
+            _sessionId = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+
+            // Age-based retention: results from runs older than the cap are dropped so they do
+            // not pile up (the user asked for ~30-day auto-cleanup).
+            ProfilotEventStore.PruneByAge(RetentionDays);
 
             // Arm the profiler for marker->code mapping (on by default - it was measured to
             // add negligible per-frame cost). Off only if the user opted into counter-only mode

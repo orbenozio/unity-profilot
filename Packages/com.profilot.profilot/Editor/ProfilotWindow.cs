@@ -70,17 +70,23 @@ namespace Profilot.Editor
             DrawCaptureMode();
             DrawNotificationSettings();
 
+            List<EventSummary> events = LoadEvents();
+
             if (!EditorApplication.isPlaying)
             {
-                DrawNoData();
+                // Keep the last run's results visible after Play stops, so they are easy to go
+                // handle. Only fall back to the empty state when the store is genuinely empty.
+                if (events.Count > 0)
+                    DrawEvents(events, playing: false);
+                else
+                    DrawNoData();
                 return;
             }
 
-            List<EventSummary> events = LoadEvents();
             if (events.Count == 0)
                 DrawQuiet();
             else
-                DrawEvents(events);
+                DrawEvents(events, playing: true);
         }
 
         private void DrawCaptureMode()
@@ -147,19 +153,59 @@ namespace Profilot.Editor
             EditorGUILayout.LabelField("No issues caught. Everything is within budget.");
         }
 
-        private void DrawEvents(List<EventSummary> events)
+        private void DrawEvents(List<EventSummary> events, bool playing)
         {
             EditorGUILayout.Space(4);
-            Color prev = GUI.color;
-            GUI.color = new Color(0.95f, 0.7f, 0.3f);
-            EditorGUILayout.LabelField($"⚠  {events.Count} issue(s) caught", EditorStyles.miniBoldLabel);
-            GUI.color = prev;
-            EditorGUILayout.LabelField($"This run: {ProfilotEventCapture.CurrentSessionId}", EditorStyles.miniLabel);
+            if (playing)
+            {
+                Color prev = GUI.color;
+                GUI.color = new Color(0.95f, 0.7f, 0.3f);
+                EditorGUILayout.LabelField($"⚠  {events.Count} issue(s) caught", EditorStyles.miniBoldLabel);
+                GUI.color = prev;
+                EditorGUILayout.LabelField($"This run: {ProfilotEventCapture.CurrentSessionId}", EditorStyles.miniLabel);
+            }
+            else
+            {
+                EditorGUILayout.LabelField($"○  Stopped - {events.Count} result(s) from the last run", EditorStyles.miniBoldLabel);
+                if (GUILayout.Button("Enter Play Mode", GUILayout.Height(24)))
+                    EditorApplication.isPlaying = true;
+            }
+
+            DrawToolbar();
 
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
             for (int i = 0; i < events.Count; i++)
                 DrawEventCard(events[i], isLatest: i == 0);
             EditorGUILayout.EndScrollView();
+        }
+
+        private void DrawToolbar()
+        {
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("Open folder", GUILayout.Height(20)))
+                OpenFolder();
+            if (GUILayout.Button("Clear earlier runs", GUILayout.Height(20)))
+            {
+                ProfilotEventStore.ClearStale();
+                Repaint();
+            }
+            if (GUILayout.Button("Clear all", GUILayout.Height(20)))
+            {
+                if (EditorUtility.DisplayDialog("Profilot", "Delete all captured results?", "Delete", "Cancel"))
+                {
+                    ProfilotEventStore.ClearAll();
+                    Repaint();
+                }
+            }
+            EditorGUILayout.EndHorizontal();
+            EditorGUILayout.Space(2);
+        }
+
+        private static void OpenFolder()
+        {
+            string dir = ProfilotEventStore.Root;
+            Directory.CreateDirectory(dir);
+            EditorUtility.RevealInFinder(dir);
         }
 
         private void DrawEventCard(EventSummary e, bool isLatest)
