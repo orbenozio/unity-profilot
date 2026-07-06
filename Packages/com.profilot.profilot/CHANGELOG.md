@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-06
+
+### Changed
+- Window UI polish:
+  - Colored section headers (Capture / Settings / Runs) for quick scanning.
+  - Collapsible, persisted groups - Settings and its Thresholds / Retention / Notifications
+    sub-sections shrink and expand and remember their state.
+  - Tooltips on every parameter (meaning, units, and what raising/lowering it does) and on the
+    actions.
+  - Icon buttons (built-in, theme-aware editor icons) for Open folder and Delete-this-run, to
+    save space; the destructive "Clear all" stays a labeled button on purpose.
+
 ## [0.2.0] - 2026-07-06
 
 ### Changed
