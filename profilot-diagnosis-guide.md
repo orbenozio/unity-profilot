@@ -27,7 +27,7 @@ profilot status                        # כמה ריצות/אירועים, מה 
 
 כל session של Play הוא "ריצה" (`run`), מזוהה בזמן ההתחלה (למשל `2026-07-06_14-32-05`). התוצאות מקובצות לפי ריצה, אז אפשר לדעת מאיזו ריצה כל אירוע ולאבחן ריצה ספציפית.
 
-הפקודות מחזירות JSON ל-stdout (exit 0 תמיד; שגיאה מופיעה כשדה `status` בתוך ה-JSON). מבנה רשומת האירוע מתועד בסעיף 14 ב-SPEC.md - השדות המרכזיים: `trigger` (type/severity/metric/value/budget), `counters`, `cpuTimeMs`, `markerTree`, `topMarkers`, ו-`callstacks` אם זמינים.
+הפקודות מחזירות JSON ל-stdout (exit 0 תמיד; שגיאה מופיעה כשדה `status` בתוך ה-JSON). מבנה רשומת האירוע מתועד בסעיף 14 ב-SPEC.md - השדות המרכזיים: `trigger` (type/severity/metric/value/budget), `counters`, `cpuTimeMs`, `frameGcAllocBytes` (הקצאת ה-GC של הפריים שנתפס), `likelyCause` (רמז גס, למשל `"gc_pressure"`, או ריק), `markerTree`, ו-`topMarkers`. **הערה חשובה: Profilot לא לוכד allocation callstacks** - אין שדה `callstacks` ברשומה. המיפוי לקוד נעשה דרך שם ה-marker (ראה למטה), לא דרך backtrace.
 
 **מסלול דמו (best-effort).** המשתמש מדביק screenshot של ה-Profiler או טקסט. אין סכמה אכופה ואין call hierarchy אמין - **הנתונים חלקיים** (הכרעה 1). אבחן ממה שיש, וסמן במפורש בסעיף "ראיות" שהנתונים נקראו מ-screenshot ולכן עשויים להיות חלקיים. מיפוי לקוד במסלול הזה הוא best-effort בלבד.
 
@@ -41,11 +41,12 @@ profilot status                        # כמה ריצות/אירועים, מה 
 
 ## איך ממפים marker לקוד
 
-אין ב-Unity API שמחזיר "marker X = שורה Y". אתה מבצע את המיפוי בעצמך, בסדר יורד של איכות:
+אין ב-Unity API שמחזיר "marker X = שורה Y", ו-Profilot לא לוכד callstacks - אתה מבצע את המיפוי בעצמך משם ה-marker, בסדר יורד של איכות:
 
-1. **callstacks של allocations** (אם `callstacks[]` קיים ברשומה) - האות הטוב ביותר לבעיות GC. אזהרה: ה-backtrace לא תמיד מדויק לשורה, ולעיתים מצביע על frame שגוי. אמת מול הקוד.
-2. **שם ה-marker** (`topMarkers[].name`) - מחרוזת חיפוש מצוינת. עשה grep בריפו ופתח את הקובץ.
-3. **הסקה משלך** - קרא את הקוד שמצאת ואמת שהוא אכן מסביר את הנתונים.
+1. **שם ה-marker** (`topMarkers[].name`, או `markerTree`) - זה האות המרכזי, ולרוב מספיק. חלץ `Class.Method` (ראה פורמט השמות למטה), עשה grep בריפו ופתח את הקובץ.
+2. **הסקה משלך** - קרא את הקוד שמצאת ואמת שהוא אכן מסביר את הנתונים (הקצאה בלולאה, מחרוזות פר-פריים, וכו').
+
+**אין callstacks - אל תבטיח אותם.** גם ל-`gc_spike` אין `callstacks[]`; ההבדל היחיד שלו מ-`frame_hitch` הוא שה-`markerTree`/`topMarkers` שלו ממוינים לפי `gcAllocBytes` במקום לפי זמן, כך שה-marker המקצה עולה לראש. **אל תשלח את המשתמש "לתפוס gc_spike כדי לקבל callstack"** - הוא לא קיים. gc_spike כן שווה לתפוס כדי לראות את המקצה מדורג לראש, אבל התוצאה עדיין שם-marker, לא שורה.
 
 **פורמט שמות ה-markers (מה שתראה בפועל).** marker של קוד משתמש נראה כך:
 `Assembly-CSharp.dll!ProfilotDemo::GarbageGenerator.Update() [Invoke]`. חלץ ממנו את `Class.Method` (כאן `GarbageGenerator.Update`), שזו מחרוזת ה-grep הטובה ביותר. ה-`Assembly-CSharp.dll!` ו-`[Invoke]` הם קישוט; ה-namespace מופיע אחרי `::`.
@@ -54,13 +55,17 @@ profilot status                        # כמה ריצות/אירועים, מה 
 `UpdateScene` → `Update.ScriptRunBehaviourUpdate` → `BehaviourUpdate` → `GarbageGenerator.Update`.
 אלה לא ארבע בעיות - זו שרשרת קריאה אחת, וה-`gcAllocBytes` הוא מצטבר (כולל ילדים), ולכן זהה לאורכה. שלושת הראשונים הם scaffolding של לולאת Unity (לא קוד שאפשר לתקן); **ה-marker שמצביע על קוד משתמש - זה עם `Assembly-CSharp.dll!` או namespace אמיתי - הוא היעד למיפוי.** מפה אותו, לא את ה-scaffolding.
 
-**אותות נוספים ברשומה:** `dedup.count` הוא תדירות (count גבוה = הבעיה קורית כמעט בכל פריים, אות חזק); `frameIndexDelta` שונה מ-0 אומר שהפריים שנתפס אותר אחורה (תקין). frame_hitch שה-marker הדומיננטי שלו הוא `GC.Collect` הוא pause של אוסף הזבל - לרוב **תוצאה** של gc_spike מתמשך, לא בעיה נפרדת.
+**אותות נוספים ברשומה:** `dedup.count` הוא תדירות (count גבוה = הבעיה קורית כמעט בכל פריים, אות חזק); `frameIndexDelta` שונה מ-0 אומר שהפריים שנתפס אותר אחורה (תקין).
+
+**`likelyCause: "gc_pressure"` - קרא אותו קודם.** אם השדה הזה קיים, Profilot כבר זיהה שה-marker הדומיננטי הוא אוסף הזבל שעוצר את הפריים - כלומר זה **תסמין** של churn הקצאות מתמשך, לא באג נפרד, ואין טעם למפות את ה-collector עצמו לקוד. אמור זאת מפורשות, והפנה למקצה: הרץ `profilot list` וחפש אירוע `gc_spike` (ה-`markerTree` שלו ממוין לפי alloc ומעלה את המקצה לראש). אל תבטיח callstacks.
+
+**`frameGcAllocBytes` מול `counters.gcAllocBytes` - שים לב לפער.** `counters.gcAllocBytes` הוא snapshot מדויק (long) של ה-tripwire ברגע ה-trip; `frameGcAllocBytes` הוא ההקצאה של הפריים שנתפס בפועל (שורש ה-`markerTree`). כשהם רחוקים זה מזה (בעיקר עם `frameIndexDelta` גדול), הפריים שנתפס אינו פריים ההקצאה - **אל תתייחס לסכום ה-markerTree כאל הקצאת ה-trip.** הערה: `frameGcAllocBytes` מגיע מ-API שמחזיר `float`, כך שמעל ~16MB הוא מעוגל - השווה סדרי גודל / טווחים, לא שוויון מדויק מול ה-`counters`. בנוסף: מה שקופל תחת `<other>` נושא כעת `gcAllocBytes` משלו, אז אם הרבה בתים יושבים ב-`<other>` - ההקצאה מפוזרת על מרקרים רבים (churn), לא ממוקדת במרקר אחד.
 
 **`budget` ב-frame_hitch הוא סף יחסי, לא frame-rate.** מאז הכיול, הסף של hitch הוא `baseline מתגלגל של הפרויקט × מכפיל` (למשל baseline 3.46ms → budget 6.92ms). זה **לא** תקציב 60/144Hz - אל תסיק ממנו FPS יעד, ואל תציע "שנה את התקציב ל-16.6ms". הוא רק אומר "הפריים חרג פי-כמה מהרגיל של הפרויקט הזה".
 
 **`cpuTimeMs` מול `counters.frameTimeMs` - הבחנה בין stall אמיתי להמתנה.** `cpuTimeMs` הוא זמן ה-CPU של PlayerLoop (העבודה של המשחק). אם הוא **נמוך משמעותית** מ-`frameTimeMs`, הפריים בילה את הרוב בהמתנה מחוץ ל-CPU (VSync / GPU present / stall חד-פעמי) - לא בעיה בקוד שאפשר לתקן, ואין `file:line` למפות. Profilot כבר זורק את המקרים הברורים (יחס CPU מתחת לחצי), אז אם hitch כזה בכל זאת צף - סמן אותו כ-borderline off-CPU / GPU-bound (מחוץ לסקופ, NG5) ולא כבאג. hitch אמיתי בקוד יראה `cpuTimeMs` קרוב ל-`frameTimeMs`.
 
-**חובה (JTBD-3): אם לא מצאת מיפוי אמין - אמור זאת מפורשות.** אל תמציא `file:line`. במסלול דמו, בהיעדר callstacks, "לא מצאתי מיפוי" הוא ברירת המחדל אלא אם שם marker בולט נמצא ב-grep.
+**חובה (JTBD-3): אם לא מצאת מיפוי אמין - אמור זאת מפורשות.** אל תמציא `file:line`. כשאין שם marker של קוד משתמש שאפשר למפות (רק scaffolding, waits, או `<other>` מפוזר), "לא מצאתי מיפוי" הוא ברירת המחדל אלא אם שם marker בולט נמצא ב-grep.
 
 ## מבנה הפלט הקבוע
 

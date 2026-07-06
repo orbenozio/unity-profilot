@@ -624,25 +624,32 @@ ProfilotEvent {
     gcAllocBytes, drawCalls, setPassCalls, triangles, batches,
     memReservedBytes, memUsedBytes
   }
+  frameGcAllocBytes // הקצאת ה-GC של הפריים שנתפס (שורש ה-markerTree). להשוואה מול
+                    // counters.gcAllocBytes (snapshot ה-trip): פער -> הפריים שנתפס אינו פריים ה-trip
+  likelyCause     // רמז גס או ריק. "gc_pressure" = ה-marker הדומיננטי הוא ה-collector
+                  // שעוצר את הפריים (תסמין של churn, לא באג נפרד; מפה את המקצה, לא את ה-collector)
   markerTree[]    // עץ ה-HierarchyFrameDataView המנורמל:
                   // { name, selfTimeMs, totalTimeMs, gcAllocBytes, calls, children[] }
-                  // נחתך כדי לא לנפח את הקובץ - אסטרטגיית חיתוך למטה
+                  // נחתך כדי לא לנפח את הקובץ - אסטרטגיית חיתוך למטה. צומת ה-<other> הסינתטי
+                  // נושא selfTimeMs, gcAllocBytes ו-collapsed (מספר הצמתים שקופלו)
   topMarkers[]    // N ה-markers הדומיננטיים (לפי self time / alloc) - לנוחות Claude
-  callstacks[]?   // אם enableAllocationCallstacks פעיל: backtrace ל-GC.Alloc (אם זמין)
+  // callstacks[]  // תוכנן (enableAllocationCallstacks) אך לא ממומש/נפלט באיטרציה זו.
+                  //   המיפוי לקוד נעשה משם ה-marker בלבד. אין להבטיח callstacks בשכבת האבחון.
   dedup {         // count, firstSeen, lastSeen - לאיחוד אירוע חוזר
     count, firstSeenFrame, lastSeenFrame
   }
 }
 ```
 
-**אסטרטגיית חיתוך `markerTree`.** עץ ה-markers הגולמי יכול להכיל אלפי צמתים; שמירתו במלואו תנפח את הקובץ ותאט את הנרמול. כלל החיתוך: **שומרים כל ענף ש-`selfTimeMs` שלו מעל סף יחסי (ברירת מחדל ~1% מזמן הפריים) או ש-`gcAllocBytes` שלו מעל 0; משם שומרים top-N ילדים לפי self time בכל רמה (ברירת מחדל N=8), ומגבילים עומק (ברירת מחדל 6).** צמתים שנחתכו מתקפלים ל-marker סינתטי אחד (`"<other> ×K, Σself=…ms"`) כדי שלא ייעלם זמן מהתמונה. `topMarkers` נגזר מהעץ המלא *לפני* החיתוך (לפי self time / alloc יורד) כדי שה-N הדומיננטיים תמיד נשמרים גם אם נחתכו מהעץ ההיררכי. הספים האלה ניתנים לכוונון ונכללים בכיול שלב 3.
+**אסטרטגיית חיתוך `markerTree`.** עץ ה-markers הגולמי יכול להכיל אלפי צמתים; שמירתו במלואו תנפח את הקובץ ותאט את הנרמול. כלל החיתוך: **שומרים כל ענף ש-`selfTimeMs` שלו מעל סף יחסי (ברירת מחדל ~1% מזמן הפריים) או ש-`gcAllocBytes` שלו מעל 0; משם שומרים top-N ילדים בכל רמה (ברירת מחדל N=8) - מדורגים לפי `gcAllocBytes` באירוע alloc-ranked (gc_spike) או לפי self time אחרת, כך שהמקצה לא נדחק מחוץ ל-N - ומגבילים עומק (ברירת מחדל 6).** צמתים שנחתכו מתקפלים ל-marker סינתטי אחד (`<other>` עם `selfTimeMs`, `gcAllocBytes` ו-`collapsed`=K) כדי שלא ייעלמו מהתמונה לא זמן ולא הקצאה. `topMarkers` נגזר מהעץ המלא *לפני* החיתוך (לפי self time / alloc יורד) כדי שה-N הדומיננטיים תמיד נשמרים גם אם נחתכו מהעץ ההיררכי. הספים האלה ניתנים לכוונון ונכללים בכיול שלב 3.
 
 **מיפוי marker -> קובץ/שורה (הליבה של JTBD-3, והחלק הכי לא-ודאי).** אין ב-Unity API ישיר ואמין שמחזיר "marker X = שורה Y בקובץ Z". מה שכן יש, בסדר יורד של איכות:
-1. **callstacks של allocations** - כאשר `Profiler.enableAllocationCallstacks` / כפתור "Call Stacks" פעיל, ל-GC.Alloc samples מצורף backtrace שכולל שמות מתודות (ולעיתים קובץ/שורה). זה האות הטוב ביותר לבעיות GC. אזהרה מאומתת: ה-backtrace לא תמיד מצביע על השורה המדויקת, ולעיתים מצביע על frame שגוי.
-2. **שם ה-marker עצמו** - markers מובנים נושאים שם מתודה (`EnemyManager.Update`), ו-`ProfilerMarker` מותאמים אישית נושאים שם שהמפתח נתן. שם המתודה הוא מחרוזת חיפוש מצוינת בריפו.
-3. **הסקה של Claude** - Claude Code מקבל את שם ה-marker + ה-backtrace (אם יש) **כ-hints**, ומבצע את המיפוי בפועל על ידי grep/קריאה בריפו (הוא כבר בתוך הפרויקט). כלומר המיפוי הסופי הוא אחריות שכבת הפרשנות, לא ה-package. ה-package מספק את ה-hints הכי טובים שיש; Claude מאמת מול הקוד האמיתי.
+1. **שם ה-marker עצמו** - markers מובנים נושאים שם מתודה (`EnemyManager.Update`), ו-`ProfilerMarker` מותאמים אישית נושאים שם שהמפתח נתן. שם המתודה הוא מחרוזת חיפוש מצוינת בריפו. זהו האות המרכזי שהרשומה מספקת. עבור `gc_spike` ה-`markerTree`/`topMarkers` ממוינים לפי `gcAllocBytes`, כך שה-marker המקצה עולה לראש (ולא נקבר מתחת ל-markers עם self time גבוה שלא הקצו).
+2. **הסקה של Claude** - Claude Code מקבל את שם ה-marker + `likelyCause` **כ-hints**, ומבצע את המיפוי בפועל על ידי grep/קריאה בריפו (הוא כבר בתוך הפרויקט). כלומר המיפוי הסופי הוא אחריות שכבת הפרשנות, לא ה-package. ה-package מספק את ה-hints הכי טובים שיש; Claude מאמת מול הקוד האמיתי.
 
-מסקנה ארכיטקטונית: ה-event record **לא** מתחייב על `file:line` מדויק. הוא מספק `markerTree`, `topMarkers`, ו-`callstacks?` כ-evidence, ו-Claude אחראי על ההצמדה לקוד - כולל הדרישה מ-JTBD-3 לומר מפורשות כשלא נמצא מיפוי. זה גם למה M3 (דיוק מיפוי) הוא יעד שאפתני שמוגדר כ"ייכויל".
+**callstacks של allocations - תוכנן, לא ממומש.** בעקרון, כאשר `Profiler.enableAllocationCallstacks` / כפתור "Call Stacks" פעיל, ל-GC.Alloc samples מצורף backtrace. **באיטרציה זו Profilot לא מפעיל את זה ולא פולט שדה `callstacks`** - קריאת ה-backtraces דורשת מעבר על `RawFrameDataView` ברמת ה-sample (לא ה-`HierarchyFrameDataView` המצרפי שבו משתמש הנרמול), והפעלת הדגל בלי לצרוך אותו רק מוסיפה overhead. לכן שכבת האבחון **לא מבטיחה callstacks** ולא שולחת את המשתמש "לתפוס gc_spike כדי לקבל callstack". אם ירצו את זה בעתיד - זו הרחבה מוגדרת (RawFrameDataView + הדגל), לא משהו שקיים היום.
+
+מסקנה ארכיטקטונית: ה-event record **לא** מתחייב על `file:line` מדויק. הוא מספק `markerTree`, `topMarkers`, ו-`likelyCause` כ-evidence, ו-Claude אחראי על ההצמדה לקוד - כולל הדרישה מ-JTBD-3 לומר מפורשות כשלא נמצא מיפוי. זה גם למה M3 (דיוק מיפוי) הוא יעד שאפתני שמוגדר כ"ייכויל".
 
 **ממשק ה-CLI (החוזה כלפי Claude Code).**
 - `profilot diagnose --last` -> JSON של האירוע האחרון מה-event store.

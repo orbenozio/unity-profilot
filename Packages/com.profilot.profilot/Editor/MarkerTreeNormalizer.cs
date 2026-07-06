@@ -29,12 +29,32 @@ namespace Profilot.Editor
             public int Calls;
         }
 
+        // Just the two columns WriteNode needs to rank and collapse a level's children, fetched
+        // once per child. Reading a column is a managed->native call into the frame view, so we
+        // avoid re-reading self/alloc in both the sort comparator and the collapse loop.
+        private struct ChildRow
+        {
+            public int Id;
+            public float SelfMs;
+            public float GcBytes;
+        }
+
         public static void Build(HierarchyFrameDataView view, bool rankByAlloc, out string markerTreeJson,
-            out string topMarkersJson, out string dominantMarker, out float frameMs, out float cpuMs)
+            out string topMarkersJson, out string dominantMarker, out float frameMs, out float cpuMs,
+            out float frameGcBytes)
         {
             frameMs = view.frameTimeMs;
             int rootId = view.GetRootItemID();
             int startId = FindPlayerLoop(view, rootId);
+
+            // Whole-frame GC alloc, read at the ROOT (not startId/PlayerLoop) on purpose: it must
+            // match the scope of counters.gcAllocBytes, which the tripwire samples from the
+            // "GC Allocated In Frame" recorder - a whole-frame total. Reading it at PlayerLoop
+            // would systematically undercount versus that counter and show a false mismatch every
+            // time. When the two DO disagree, the captured frame and the trip frame differ
+            // (frameIndexDelta), or the alloc is diffuse churn no single marker owns - either way
+            // the reader must not treat the markerTree total as the frame total.
+            frameGcBytes = view.GetItemColumnDataAsFloat(rootId, HierarchyFrameDataView.columnGcMemory);
 
             // Total main-thread CPU time under PlayerLoop (the game's work). When this is far
             // below the frame time, the main thread spent the frame WAITING - VSync, GPU
@@ -70,7 +90,7 @@ namespace Profilot.Editor
             topMarkersJson = top.ToString();
 
             var tree = new StringBuilder();
-            WriteNode(view, startId, tree, keepMs, 0);
+            WriteNode(view, startId, tree, keepMs, 0, rankByAlloc);
             markerTreeJson = tree.ToString();
         }
 
@@ -222,7 +242,8 @@ namespace Profilot.Editor
             sb.Append('}');
         }
 
-        private static void WriteNode(HierarchyFrameDataView view, int id, StringBuilder sb, float keepMs, int depth)
+        private static void WriteNode(HierarchyFrameDataView view, int id, StringBuilder sb, float keepMs,
+            int depth, bool rankByAlloc)
         {
             Marker m = Read(view, id);
             sb.Append('{');
@@ -236,30 +257,46 @@ namespace Profilot.Editor
             if (depth < MaxDepth)
                 view.GetItemChildren(id, children);
 
-            // Rank children by self time so the heaviest survive the top-N cut.
-            children.Sort((a, b) =>
-                view.GetItemColumnDataAsFloat(b, HierarchyFrameDataView.columnSelfTime)
-                    .CompareTo(view.GetItemColumnDataAsFloat(a, HierarchyFrameDataView.columnSelfTime)));
-
-            var kept = new List<int>();
-            double cutSelf = 0;
-            int cutCount = 0;
+            // Read each child's self/alloc ONCE (each read is a native call), dropping editor
+            // overhead up front, then rank and collapse over the in-memory rows.
+            var rows = new List<ChildRow>(children.Count);
             foreach (int c in children)
             {
                 if (IsEditorOverhead(view, c))
                     continue;
+                rows.Add(new ChildRow
+                {
+                    Id = c,
+                    SelfMs = view.GetItemColumnDataAsFloat(c, HierarchyFrameDataView.columnSelfTime),
+                    GcBytes = view.GetItemColumnDataAsFloat(c, HierarchyFrameDataView.columnGcMemory),
+                });
+            }
 
-                float cSelf = view.GetItemColumnDataAsFloat(c, HierarchyFrameDataView.columnSelfTime);
-                float cGc = view.GetItemColumnDataAsFloat(c, HierarchyFrameDataView.columnGcMemory);
-                bool interesting = cSelf >= keepMs || cGc > 0f;
+            // Rank children by the trigger's own dimension so the ones that survive the top-N cut
+            // are the ones that explain the problem: GC alloc for an alloc-ranked event (else a
+            // low-self-time allocator gets pushed past the cap and its bytes vanish from the tree),
+            // self time otherwise.
+            if (rankByAlloc)
+                rows.Sort((a, b) => b.GcBytes.CompareTo(a.GcBytes));
+            else
+                rows.Sort((a, b) => b.SelfMs.CompareTo(a.SelfMs));
+
+            var kept = new List<int>();
+            double cutSelf = 0;
+            double cutGc = 0;
+            int cutCount = 0;
+            foreach (ChildRow r in rows)
+            {
+                bool interesting = r.SelfMs >= keepMs || r.GcBytes > 0f;
 
                 if (kept.Count < TopChildrenPerLevel && interesting)
                 {
-                    kept.Add(c);
+                    kept.Add(r.Id);
                 }
                 else
                 {
-                    cutSelf += cSelf;
+                    cutSelf += r.SelfMs;
+                    cutGc += r.GcBytes;
                     cutCount++;
                 }
             }
@@ -270,12 +307,16 @@ namespace Profilot.Editor
                 for (int i = 0; i < kept.Count; i++)
                 {
                     if (i > 0) sb.Append(',');
-                    WriteNode(view, kept[i], sb, keepMs, depth + 1);
+                    WriteNode(view, kept[i], sb, keepMs, depth + 1, rankByAlloc);
                 }
                 if (cutCount > 0)
                 {
                     if (kept.Count > 0) sb.Append(',');
+                    // Carry the collapsed GC alloc too: dropping it silently under-reported the
+                    // frame's allocation and made a diffuse-churn frame look like it barely
+                    // allocated. Now the reader sees the bytes that live off the ranked branches.
                     sb.Append("{\"name\":\"<other>\",\"selfTimeMs\":").Append(Json.Num(cutSelf))
+                      .Append(",\"gcAllocBytes\":").Append(Json.Num(cutGc))
                       .Append(",\"collapsed\":").Append(Json.Num(cutCount)).Append('}');
                 }
                 sb.Append(']');

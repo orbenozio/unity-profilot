@@ -204,6 +204,7 @@ namespace Profilot.Editor
             string status = deep ? "ok" : "counters_only";
             float frameMs = 0f;
             float cpuMs = 0f;
+            float frameGcBytes = 0f;
 
             if (deep)
             {
@@ -217,7 +218,8 @@ namespace Profilot.Editor
                     if (view != null && view.valid)
                     {
                         MarkerTreeNormalizer.Build(view, signal.Type == "gc_spike",
-                            out markerTreeJson, out topMarkersJson, out dominantMarker, out frameMs, out cpuMs);
+                            out markerTreeJson, out topMarkersJson, out dominantMarker, out frameMs, out cpuMs,
+                            out frameGcBytes);
                     }
                     else
                     {
@@ -255,11 +257,13 @@ namespace Profilot.Editor
             }
             acc.Count += signal.RepeatCount + 1;
 
+            string likelyCause = LikelyCause(dominantMarker);
+
             string json;
             try
             {
                 json = BuildEventJson(eventId, frameIndex, requestedFrameIndex, signal, status,
-                    markerTreeJson, topMarkersJson, cpuMs, acc);
+                    markerTreeJson, topMarkersJson, cpuMs, frameGcBytes, likelyCause, acc);
             }
             catch (Exception e)
             {
@@ -303,6 +307,28 @@ namespace Profilot.Editor
 
             string slug = sb.ToString().Trim('_', '.');
             return slug.Length > 0 ? slug : "unknown";
+        }
+
+        /// <summary>
+        /// A coarse cause hint for the diagnosis layer, derived from the dominant marker. A frame
+        /// whose dominant marker is the garbage collector pausing the frame
+        /// (GarbageCollector.CollectIncremental / GC.Collect) is the SYMPTOM of sustained
+        /// allocation churn, not a distinct bug - the fixable code is whatever allocated, which a
+        /// gc_spike event (ranked by alloc) surfaces. Tagging it "gc_pressure" lets the diagnosis
+        /// point the user at the gc_spike instead of trying to map the collector itself. Empty
+        /// when there is no confident hint.
+        /// </summary>
+        private static string LikelyCause(string dominantMarker)
+        {
+            if (string.IsNullOrEmpty(dominantMarker))
+                return string.Empty;
+
+            if (dominantMarker.StartsWith("GarbageCollector", StringComparison.Ordinal) ||
+                dominantMarker.IndexOf("CollectIncremental", StringComparison.Ordinal) >= 0 ||
+                dominantMarker == "GC.Collect")
+                return "gc_pressure";
+
+            return string.Empty;
         }
 
         /// <summary>
@@ -353,7 +379,7 @@ namespace Profilot.Editor
 
         private static string BuildEventJson(string eventId, int frameIndex, int requestedFrameIndex,
             in TripSignal signal, string status, string markerTreeJson, string topMarkersJson, float cpuMs,
-            Accumulator acc)
+            float frameGcBytes, string likelyCause, Accumulator acc)
         {
             string severity = Severity(signal.Value, signal.Budget);
             string review = Reviewed.TryGetValue(eventId, out string r) ? r : "open";
@@ -376,6 +402,17 @@ namespace Profilot.Editor
             // when cpuTimeMs is far below the frame time, the frame was spent waiting off-CPU
             // (VSync / GPU present / idle), not in fixable code (SPEC.md M4, NG5).
             sb.Append(",\"cpuTimeMs\":").Append(Json.Num(cpuMs));
+
+            // Whole-frame GC alloc of the CAPTURED frame (from the marker tree root). counters
+            // .gcAllocBytes is the tripwire's snapshot at trip time; when the two disagree the
+            // captured frame and the trip frame differ (frameIndexDelta), so the markerTree total
+            // must not be read as the trip's allocation.
+            sb.Append(",\"frameGcAllocBytes\":").Append(Json.Num(frameGcBytes));
+
+            // Coarse cause hint (may be empty). "gc_pressure" = the frame's dominant marker is the
+            // collector pausing the frame, i.e. a symptom of allocation churn - map the allocator
+            // (a gc_spike event), not the collector.
+            sb.Append(",\"likelyCause\":").Append(Json.Str(likelyCause));
 
             sb.Append(",\"trigger\":{");
             sb.Append("\"type\":").Append(Json.Str(signal.Type));

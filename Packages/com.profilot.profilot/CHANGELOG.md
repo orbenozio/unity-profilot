@@ -6,6 +6,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-06
+
+### Added
+- Event records now carry `frameGcAllocBytes` (the captured frame's own GC alloc, from the
+  marker-tree root) alongside the tripwire's `counters.gcAllocBytes`. When the two disagree the
+  captured frame is not the trip frame - the diagnosis layer no longer reads the marker-tree
+  total as the trip's allocation.
+- Event records now carry `likelyCause`. A frame whose dominant marker is the garbage collector
+  pausing the frame is tagged `"gc_pressure"` - a symptom of allocation churn, so the diagnosis
+  points at the allocator (a gc_spike event) instead of trying to map the collector itself.
+
+### Fixed
+- The `markerTree`'s synthetic `<other>` node dropped the collapsed children's GC alloc, so a
+  frame of diffuse allocation churn looked like it barely allocated (only a tiny fraction of the
+  frame's bytes were attributed). `<other>` now carries `gcAllocBytes` too, and for an
+  alloc-ranked event (gc_spike) the per-level top-N keeps children by GC alloc, so a low-self
+  allocator is no longer pushed out of the tree.
+
+### Changed
+- Marker-tree normalization now reads each level's child columns once (into a small in-memory
+  row) instead of re-reading self-time / alloc in both the sort comparator and the collapse loop
+  - fewer native frame-view calls per captured frame. Behavior is unchanged (same tree output).
+
+### Docs
+- Corrected the diagnosis guide and SPEC: Profilot does not capture allocation `callstacks`, and
+  the mapping-to-code path is via the marker name, not a backtrace. The guide no longer promises
+  callstacks or tells the user to "capture a gc_spike to get a callstack" (it does not exist);
+  gc_spike is still worth capturing because its tree is ranked by allocation.
+
 ## [0.2.3] - 2026-07-06
 
 ### Added
