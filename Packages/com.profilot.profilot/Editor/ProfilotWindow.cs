@@ -157,6 +157,10 @@ namespace Profilot.Editor
 
             EditorGUI.indentLevel++;
 
+            // Widen the label column so the parameter names (with their units) are not clipped.
+            float prevLabelWidth = EditorGUIUtility.labelWidth;
+            EditorGUIUtility.labelWidth = 210f;
+
             if (FoldoutBar("Profilot.UI.Thresholds", "Thresholds", Purple))
             {
                 EditorGUI.indentLevel++;
@@ -233,6 +237,8 @@ namespace Profilot.Editor
                 EditorGUILayout.LabelField("Fires once per new problem, per run. No LLM cost.", EditorStyles.miniLabel);
                 EditorGUI.indentLevel--;
             }
+
+            EditorGUIUtility.labelWidth = prevLabelWidth;
 
             EditorGUILayout.Space(2);
             if (IconButtonWide("Refresh", "Reset all settings to defaults", "Reset to defaults"))

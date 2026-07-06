@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-06
+
+### Fixed
+- Settings parameter labels were clipped ("Frame hitch (x baseli...") - the label column is now
+  widened so the full name and its units are visible.
+
 ## [0.2.1] - 2026-07-06
 
 ### Changed
