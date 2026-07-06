@@ -92,6 +92,15 @@ namespace Profilot
 
         private void OnEnable()
         {
+            // Load user-tuned thresholds (falls back to the field defaults if no config file).
+            ProfilotConfig cfg = ProfilotConfigStore.Load();
+            FrameHitchMultiplier = cfg.frameHitchMultiplier;
+            FrameHitchFloorMs = cfg.frameHitchFloorMs;
+            GcAllocBudgetBytes = cfg.gcAllocBudgetBytes;
+            DrawCallsBaselineMultiplier = cfg.drawCallsBaselineMultiplier;
+            CooldownSeconds = cfg.cooldownSeconds;
+            WarmupFrames = cfg.warmupFrames;
+
             for (int i = 0; i < TripKindCount; i++)
             {
                 _lastReportTime[i] = double.NegativeInfinity;

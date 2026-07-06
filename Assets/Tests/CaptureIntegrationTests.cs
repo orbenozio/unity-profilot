@@ -31,14 +31,14 @@ namespace Profilot.PlayTests
             }
         }
 
-        private static string EventsDir =>
-            Path.Combine(Directory.GetCurrentDirectory(), "Library", "Profilot", "events");
+        private static string RunsDir =>
+            Path.Combine(Directory.GetCurrentDirectory(), "Library", "Profilot", "runs");
 
         [UnityTest]
         public IEnumerator Tripwire_captures_a_gc_spike_event()
         {
-            if (Directory.Exists(EventsDir))
-                Directory.Delete(EventsDir, true);
+            if (Directory.Exists(RunsDir))
+                Directory.Delete(RunsDir, true);
 
             var go = new GameObject("Allocator");
             go.AddComponent<Allocator>();
@@ -51,9 +51,10 @@ namespace Profilot.PlayTests
             Object.Destroy(go);
             yield return null;
 
-            Assert.IsTrue(Directory.Exists(EventsDir), "event store directory was not created");
+            Assert.IsTrue(Directory.Exists(RunsDir), "run store directory was not created");
 
-            string[] files = Directory.GetFiles(EventsDir, "evt_*.json");
+            // Events live in per-run folders now (runs/<runId>/evt_*.json).
+            string[] files = Directory.GetFiles(RunsDir, "evt_*.json", SearchOption.AllDirectories);
             Assert.IsNotEmpty(files, "no events were captured after allocating every frame");
 
             bool gcSpike = false;

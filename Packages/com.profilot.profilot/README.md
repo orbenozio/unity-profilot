@@ -42,10 +42,12 @@ Working end to end and verified live in Unity 6000.3. See the roadmap in
 ```
 Runtime/  ProfilotTripwire.cs        - the live tripwire (ProfilerRecorder)
           ProfilotTripChannel.cs     - in-memory trip hand-off to the editor
+          ProfilotConfig.cs          - user-tunable thresholds + retention (shared with the editor)
 Editor/   ProfilotEventCapture.cs    - on trip: fetch frame, normalize, write the event
           MarkerTreeNormalizer.cs    - drill into PlayerLoop, trim the tree, topMarkers
-          ProfilotEventStore.cs      - atomic event files under Library/Profilot/events
-          ProfilotWindow.cs          - the editor window
+          ProfilotEventStore.cs      - per-run event files under Library/Profilot/runs/<run>
+          ProfilotWindow.cs          - the editor window (runs, settings, review actions)
+          ProfilotNotifier.cs        - proactive notifications on a new caught problem
           FrameDumpSpike.cs          - the Phase 0.5 ProfilerDriver capture probe
           Json.cs                    - dependency-free JSON emitter
 ```

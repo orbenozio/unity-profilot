@@ -6,6 +6,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-06
+
+### Changed
+- Per-run event store. Each Play run now writes into its own folder,
+  `Library/Profilot/runs/<runId>/evt_*.json`, with a top-level `latest.json` and `reviews.json`.
+  Runs are kept separately (no more cross-run dedup-overwrite), so results can be distinguished,
+  navigated, and deleted by run. `runId` is the run's start time (`2026-07-06_14-32-05`).
+- Window redesigned around runs: a run picker to navigate between runs, the selected run's
+  caught-issue list, an "Open folder" button, and "Delete this run" / "Clear all runs".
+
+### Added
+- Settings. A `ProfilotConfig` (persisted at `ProjectSettings/ProfilotConfig.json`, so it
+  survives a Library wipe and can be committed) exposes the detection thresholds (frame-hitch
+  multiplier + floor, GC budget, draw-calls multiplier, cooldown, warm-up) and retention
+  (auto-delete runs older than N days, default 30, toggleable). The runtime tripwire reads the
+  thresholds at startup; a "Settings" foldout in the window edits everything, alongside the
+  notification and deep-capture toggles.
+- CLI is run-aware: `runs` (list runs), `--run <id>` filter on `list` and `diagnose --id`,
+  `diagnose --id` resolves to the newest run containing the event, and review decisions from
+  `reviews.json` are overlaid across runs. `list` items carry their `run`.
+
 ## [0.1.7] - 2026-07-06
 
 ### Changed

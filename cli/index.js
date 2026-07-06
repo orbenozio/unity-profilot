@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 'use strict';
 
-// Profilot CLI (SPEC.md section 14). Pure transport: it reads the file-based event store
-// the Unity editor layer writes (Library/Profilot/events) and prints structured JSON to
-// stdout for Claude Code. It never calls an LLM and never writes to the store - the
-// interpretation is Claude Code's job. Every command exits 0; failures are reported as a
-// "status" field inside the JSON (SPEC.md section 13).
+// Profilot CLI (SPEC.md section 14). Pure transport: it reads the per-run file store the Unity
+// editor layer writes (Library/Profilot/runs/<run>/evt_*.json, plus a top-level latest.json and
+// reviews.json) and prints structured JSON to stdout for Claude Code. It never calls an LLM and
+// never writes to the store. Every command exits 0; failures are reported as a "status" field.
 
 const fs = require('fs');
 const path = require('path');
@@ -14,18 +13,16 @@ function print(obj) {
   process.stdout.write(JSON.stringify(obj, null, 2) + '\n');
 }
 
-// Resolve Library/Profilot/events: explicit env wins, else walk up from cwd to the project.
-function findEventsDir() {
+// Resolve Library/Profilot (holds runs/, latest.json, reviews.json).
+function findBase() {
   if (process.env.PROFILOT_PROJECT) {
-    // Explicit project root: return the store only if it exists, so a project that has not
-    // captured anything yet reports no_data instead of crashing on a missing directory.
-    const candidate = path.join(process.env.PROFILOT_PROJECT, 'Library', 'Profilot', 'events');
-    return fs.existsSync(candidate) ? candidate : null;
+    const c = path.join(process.env.PROFILOT_PROJECT, 'Library', 'Profilot');
+    return fs.existsSync(c) ? c : null;
   }
   let dir = process.cwd();
   for (;;) {
-    const candidate = path.join(dir, 'Library', 'Profilot', 'events');
-    if (fs.existsSync(candidate)) return candidate;
+    const c = path.join(dir, 'Library', 'Profilot');
+    if (fs.existsSync(c)) return c;
     const parent = path.dirname(dir);
     if (parent === dir) return null;
     dir = parent;
@@ -36,109 +33,154 @@ function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
-function eventFiles(eventsDir) {
+function runsRoot(base) {
+  return path.join(base, 'runs');
+}
+
+// Run ids, newest first (folder names are yyyy-MM-dd_HH-mm-ss, so a string sort is chronological).
+function listRuns(base) {
+  const root = runsRoot(base);
+  if (!fs.existsSync(root)) return [];
   return fs
-    .readdirSync(eventsDir)
+    .readdirSync(root, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name)
+    .sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+}
+
+function runEventFiles(base, run) {
+  const dir = path.join(runsRoot(base), run);
+  if (!fs.existsSync(dir)) return [];
+  return fs
+    .readdirSync(dir)
     .filter((f) => f.startsWith('evt_') && f.endsWith('.json') && !f.endsWith('.tmp'));
 }
 
-function summarize(rec) {
+// Cross-run review decisions (eventId -> status), applied over the per-file value.
+function reviewMap(base) {
+  const map = {};
+  const p = path.join(base, 'reviews.json');
+  if (!fs.existsSync(p)) return map;
+  try {
+    const data = readJson(p);
+    for (const it of data.items || []) if (it && it.id) map[it.id] = it.status;
+  } catch (_) {
+    // a corrupt reviews file just means no overlay
+  }
+  return map;
+}
+
+function summarize(rec, run, reviews) {
   const trigger = rec.trigger || {};
   return {
     eventId: rec.eventId,
+    run,
     type: trigger.type,
     severity: trigger.severity,
     capturedAt: rec.capturedAt,
-    reviewStatus: rec.reviewStatus,
-    stale: rec.stale,
-    // The run that captured this record. stale:false is the current run; stale:true is an
-    // earlier run whose problem did not recur. Lets a reader group events by run.
+    reviewStatus: reviews[rec.eventId] || rec.reviewStatus || 'open',
     sessionId: rec.sessionId,
   };
 }
 
-function cmdStatus(eventsDir) {
-  if (!eventsDir) {
+function withReview(rec, reviews) {
+  if (rec && rec.eventId && reviews[rec.eventId]) rec.reviewStatus = reviews[rec.eventId];
+  return rec;
+}
+
+function cmdStatus(base) {
+  if (!base) {
     return {
       status: 'no_data',
       message:
-        'No Profilot event store found. Enter Play Mode in the Unity Editor with Profilot installed so the tripwire can capture events.',
+        'No Profilot store found. Enter Play Mode in the Unity Editor with Profilot installed so the tripwire can capture events.',
     };
   }
-  const files = eventFiles(eventsDir);
+  const runs = listRuns(base);
+  let eventCount = 0;
+  for (const r of runs) eventCount += runEventFiles(base, r).length;
   let latest = null;
-  const latestPath = path.join(eventsDir, 'latest.json');
-  if (fs.existsSync(latestPath)) {
+  const lp = path.join(base, 'latest.json');
+  if (fs.existsSync(lp)) {
     try {
-      latest = readJson(latestPath).eventId;
+      const p = readJson(lp);
+      latest = { eventId: p.eventId, run: p.run };
     } catch (_) {
       latest = null;
     }
   }
-  return {
-    status: files.length > 0 ? 'ok' : 'no_data',
-    eventsDir,
-    eventCount: files.length,
-    latest,
-  };
+  return { status: runs.length > 0 ? 'ok' : 'no_data', base, runCount: runs.length, eventCount, latest };
 }
 
-function cmdList(eventsDir) {
-  if (!eventsDir) return cmdStatus(eventsDir);
+function cmdRuns(base) {
+  if (!base) return cmdStatus(base);
+  const runs = listRuns(base).map((r) => ({ run: r, eventCount: runEventFiles(base, r).length }));
+  return { status: 'ok', count: runs.length, runs };
+}
+
+function cmdList(base, runFilter) {
+  if (!base) return cmdStatus(base);
+  const reviews = reviewMap(base);
+  const runs = runFilter ? [runFilter] : listRuns(base);
   const events = [];
-  for (const f of eventFiles(eventsDir)) {
-    try {
-      events.push(summarize(readJson(path.join(eventsDir, f))));
-    } catch (_) {
-      // Skip a half-written or malformed file rather than failing the whole listing.
+  for (const r of runs) {
+    for (const f of runEventFiles(base, r)) {
+      try {
+        events.push(summarize(readJson(path.join(runsRoot(base), r, f)), r, reviews));
+      } catch (_) {
+        // skip a half-written or malformed file rather than failing the whole listing
+      }
     }
   }
   events.sort((a, b) => String(b.capturedAt).localeCompare(String(a.capturedAt)));
   return { status: 'ok', count: events.length, events };
 }
 
-function cmdDiagnoseLast(eventsDir) {
-  if (!eventsDir) return cmdStatus(eventsDir);
-  const latestPath = path.join(eventsDir, 'latest.json');
-  if (!fs.existsSync(latestPath)) {
-    return { status: 'no_data', message: 'No events captured yet in this session.' };
+function cmdDiagnoseLast(base) {
+  if (!base) return cmdStatus(base);
+  const lp = path.join(base, 'latest.json');
+  if (!fs.existsSync(lp)) {
+    return { status: 'no_data', message: 'No events captured yet.' };
   }
   let pointer;
   try {
-    pointer = readJson(latestPath);
+    pointer = readJson(lp);
   } catch (e) {
     return { status: 'error', message: `latest.json is unreadable: ${e.message}` };
   }
-  const file = path.join(eventsDir, pointer.file || `${pointer.eventId}.json`);
+  const file = path.join(runsRoot(base), pointer.run || '', pointer.file || `${pointer.eventId}.json`);
   if (!fs.existsSync(file)) {
     return { status: 'error', message: `Event file missing for ${pointer.eventId}.` };
   }
   try {
-    return readJson(file);
+    return withReview(readJson(file), reviewMap(base));
   } catch (e) {
     return { status: 'error', message: `Event ${pointer.eventId} is unreadable: ${e.message}` };
   }
 }
 
-function cmdDiagnoseId(eventsDir, id) {
-  if (!eventsDir) return cmdStatus(eventsDir);
+// --id resolves to the newest run containing that event, unless --run pins a specific run.
+function cmdDiagnoseId(base, id, runFilter) {
+  if (!base) return cmdStatus(base);
   if (!id) return { status: 'error', message: 'Missing --id <eventId>.' };
   const name = id.endsWith('.json') ? id : `${id}.json`;
-  const file = path.join(eventsDir, name);
-  if (!fs.existsSync(file)) {
-    return { status: 'error', message: `No event with id ${id}.` };
+  const runs = runFilter ? [runFilter] : listRuns(base);
+  for (const r of runs) {
+    const file = path.join(runsRoot(base), r, name);
+    if (fs.existsSync(file)) {
+      try {
+        return withReview(readJson(file), reviewMap(base));
+      } catch (e) {
+        return { status: 'error', message: `Event ${id} is unreadable: ${e.message}` };
+      }
+    }
   }
-  try {
-    return readJson(file);
-  } catch (e) {
-    return { status: 'error', message: `Event ${id} is unreadable: ${e.message}` };
-  }
+  return { status: 'error', message: `No event with id ${id}${runFilter ? ` in run ${runFilter}` : ''}.` };
 }
 
 function getFlag(argv, name) {
   const i = argv.indexOf(name);
   if (i === -1) return undefined;
-  // boolean flag if no value follows or the next token is another flag
   const next = argv[i + 1];
   return next && !next.startsWith('--') ? next : true;
 }
@@ -146,26 +188,31 @@ function getFlag(argv, name) {
 function main() {
   const argv = process.argv.slice(2);
   const command = argv[0];
-  const eventsDir = findEventsDir();
+  const base = findBase();
+  const runFlag = getFlag(argv, '--run');
+  const run = typeof runFlag === 'string' ? runFlag : undefined;
 
   let result;
   switch (command) {
     case 'status':
-      result = cmdStatus(eventsDir);
+      result = cmdStatus(base);
+      break;
+    case 'runs':
+      result = cmdRuns(base);
       break;
     case 'list':
-      result = cmdList(eventsDir);
+      result = cmdList(base, run);
       break;
     case 'diagnose': {
       const id = getFlag(argv, '--id');
-      if (typeof id === 'string') result = cmdDiagnoseId(eventsDir, id);
-      else result = cmdDiagnoseLast(eventsDir); // --last is the default
+      if (typeof id === 'string') result = cmdDiagnoseId(base, id, run);
+      else result = cmdDiagnoseLast(base); // --last is the default
       break;
     }
     default:
       result = {
         status: 'error',
-        message: `Unknown command "${command || ''}". Usage: profilot <diagnose [--last|--id <eventId>]|list|status>.`,
+        message: `Unknown command "${command || ''}". Usage: profilot <diagnose [--last|--id <eventId>] [--run <id>]|list [--run <id>]|runs|status>.`,
       };
   }
 

@@ -70,7 +70,6 @@ namespace Profilot.Editor
                 Reviewed[eventId] = status;
 
             SaveReviews();
-            ProfilotEventStore.SetReviewStatus(eventId, status);
         }
 
         static ProfilotEventCapture()
@@ -117,10 +116,14 @@ namespace Profilot.Editor
             return Reviewed.TryGetValue(eventId, out string s) && s != "open";
         }
 
-        private const string DeepCaptureKey = "Profilot.DeepCapture";
+        /// <summary>Live review status for an event (from the persisted, cross-run decision map),
+        /// so the window reflects a mark instantly on every run's copy.</summary>
+        internal static string ReviewStatusOf(string eventId)
+        {
+            return Reviewed.TryGetValue(eventId, out string s) ? s : "open";
+        }
 
-        // Event results older than this (by file age) are dropped on play start.
-        private const int RetentionDays = 30;
+        private const string DeepCaptureKey = "Profilot.DeepCapture";
 
         /// <summary>
         /// Deep capture keeps the Unity Profiler recording during Play so a trip can fetch the
@@ -148,22 +151,22 @@ namespace Profilot.Editor
             if (change != PlayModeStateChange.EnteredPlayMode)
                 return;
 
-            // Human-readable run id: the local date + time the run started, so the window and
-            // CLI show "2026-07-06 14:32:05" instead of an opaque hash.
-            _sessionId = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            // Human-readable, path-safe run id: the local date + time the run started. It is
+            // both the sessionId shown in the window/CLI and the name of this run's folder, so
+            // it must avoid ':' (illegal in a Windows path).
+            _sessionId = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
+            ProfilotEventStore.CurrentRun = _sessionId;
 
-            // Age-based retention: results from runs older than the cap are dropped so they do
-            // not pile up (the user asked for ~30-day auto-cleanup).
-            ProfilotEventStore.PruneByAge(RetentionDays);
+            // Age-based retention: drop run folders older than the configured cap (if enabled),
+            // so results from long-gone runs do not pile up.
+            ProfilotConfig cfg = ProfilotConfigStore.Load();
+            if (cfg.pruneEnabled)
+                ProfilotEventStore.PruneByAge(cfg.retentionDays);
 
             // Arm the profiler for marker->code mapping (on by default - it was measured to
             // add negligible per-frame cost). Off only if the user opted into counter-only mode
             // for maximum Editor speed.
             Profiler.enabled = DeepCapture;
-
-            // Everything already in the store is from a previous run - mark it stale before
-            // this session starts writing fresh events over it (SPEC.md section 15).
-            ProfilotEventStore.MarkAllStale();
 
             ProfilotTripChannel.Clear();
             Dedup.Clear();
@@ -407,6 +410,7 @@ namespace Profilot.Editor
             sb.Append('{');
             sb.Append("\"schemaVersion\":").Append(Json.Str(SchemaVersion));
             sb.Append(",\"eventId\":").Append(Json.Str(eventId));
+            sb.Append(",\"run\":").Append(Json.Str(_sessionId));
             sb.Append(",\"file\":").Append(Json.Str(eventId + ".json"));
             sb.Append(",\"capturedAt\":").Append(Json.Str(DateTime.UtcNow.ToString("o")));
             sb.Append('}');

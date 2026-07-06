@@ -16,11 +16,16 @@
 **מסלול live (מועדף).** המשתמש (או אתה לבקשתו) מריץ:
 
 ```
-profilot diagnose --last        # האירוע האחרון שנתפס
-profilot diagnose --id <eventId> # אירוע ספציפי
-profilot list                    # רשימת האירועים בתור
-profilot status                  # האם Play רץ, כמה אירועים בתור
+profilot diagnose --last               # האירוע האחרון שנתפס
+profilot diagnose --id <eventId>       # אירוע ספציפי (הריצה האחרונה שמכילה אותו)
+profilot diagnose --id <eventId> --run <run>   # ...מריצה ספציפית
+profilot list                          # אירועים מכל הריצות (כל אחד מתויג ב-run שלו)
+profilot list --run <run>              # ...רק ריצה מסוימת
+profilot runs                          # רשימת הריצות, מהחדשה, עם ספירת אירועים
+profilot status                        # כמה ריצות/אירועים, מה האחרון
 ```
+
+כל session של Play הוא "ריצה" (`run`), מזוהה בזמן ההתחלה (למשל `2026-07-06_14-32-05`). התוצאות מקובצות לפי ריצה, אז אפשר לדעת מאיזו ריצה כל אירוע ולאבחן ריצה ספציפית.
 
 הפקודות מחזירות JSON ל-stdout (exit 0 תמיד; שגיאה מופיעה כשדה `status` בתוך ה-JSON). מבנה רשומת האירוע מתועד בסעיף 14 ב-SPEC.md - השדות המרכזיים: `trigger` (type/severity/metric/value/budget), `counters`, `cpuTimeMs`, `markerTree`, `topMarkers`, ו-`callstacks` אם זמינים.
 

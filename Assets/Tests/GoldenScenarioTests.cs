@@ -18,13 +18,21 @@ namespace Profilot.PlayTests
     /// </summary>
     public class GoldenScenarioTests
     {
-        private static string EventsDir =>
-            Path.Combine(Directory.GetCurrentDirectory(), "Library", "Profilot", "events");
+        private static string RunsDir =>
+            Path.Combine(Directory.GetCurrentDirectory(), "Library", "Profilot", "runs");
 
         private static void ClearStore()
         {
-            if (Directory.Exists(EventsDir))
-                Directory.Delete(EventsDir, true);
+            if (Directory.Exists(RunsDir))
+                Directory.Delete(RunsDir, true);
+        }
+
+        // Events now live in per-run folders (runs/<runId>/evt_*.json), so scan them all.
+        private static string[] AllEventFiles()
+        {
+            return Directory.Exists(RunsDir)
+                ? Directory.GetFiles(RunsDir, "evt_*.json", SearchOption.AllDirectories)
+                : System.Array.Empty<string>();
         }
 
         // All PlayMode tests share ONE play session, so the tripwire (a DontDestroyOnLoad
@@ -56,10 +64,7 @@ namespace Profilot.PlayTests
         // allocation gc_spike path is covered by CaptureIntegrationTests).
         private static bool CaughtAndMapped(string responsibleMarker, params string[] acceptedTypes)
         {
-            if (!Directory.Exists(EventsDir))
-                return false;
-
-            foreach (string file in Directory.GetFiles(EventsDir, "evt_*.json"))
+            foreach (string file in AllEventFiles())
             {
                 string json = File.ReadAllText(file);
                 foreach (string type in acceptedTypes)
