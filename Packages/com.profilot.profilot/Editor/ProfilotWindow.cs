@@ -198,6 +198,7 @@ namespace Profilot.Editor
                     _config.warmupFrames);
                 if (EditorGUI.EndChangeCheck())
                     ProfilotConfigStore.Save(_config);
+                DrawLiveBaseline();
                 EditorGUILayout.LabelField("Applies on the next Play.", EditorStyles.miniLabel);
                 EditorGUI.indentLevel--;
             }
@@ -263,6 +264,10 @@ namespace Profilot.Editor
         {
             List<string> runs = ProfilotEventStore.ListRuns();
             HeaderBar("Runs", Orange);
+
+            string baseline = BaselineLine();
+            if (baseline != null)
+                EditorGUILayout.LabelField(baseline, EditorStyles.miniLabel);
 
             if (runs.Count == 0)
             {
@@ -429,6 +434,44 @@ namespace Profilot.Editor
             string dir = ProfilotEventStore.RunsRoot;
             Directory.CreateDirectory(dir);
             EditorUtility.RevealInFinder(dir);
+        }
+
+        private static ProfilotTripwire FindTripwire()
+        {
+            // The tripwire GameObject is HideFlags.HideAndDontSave, so FindObjectsOfTypeAll
+            // (which includes hidden objects) is the way to reach it.
+            var all = Resources.FindObjectsOfTypeAll<ProfilotTripwire>();
+            return all.Length > 0 ? all[0] : null;
+        }
+
+        // Compact live baseline (or null when not playing / not warm yet).
+        private static string BaselineLine()
+        {
+            ProfilotTripwire tw = EditorApplication.isPlaying ? FindTripwire() : null;
+            if (tw == null || !tw.FrameBaselineReady)
+                return null;
+            string dc = tw.DrawCallsBaselineReady ? $"  ·  draw calls {tw.DrawCallsBaseline:0}" : string.Empty;
+            return $"baseline: frame {tw.FrameBaselineMs:0.0} ms{dc}";
+        }
+
+        // Detailed baseline readout with the derived trip thresholds, shown under Thresholds.
+        private void DrawLiveBaseline()
+        {
+            ProfilotTripwire tw = EditorApplication.isPlaying ? FindTripwire() : null;
+            if (tw != null && tw.FrameBaselineReady)
+            {
+                double hitch = Math.Max(tw.FrameBaselineMs * _config.frameHitchMultiplier, _config.frameHitchFloorMs);
+                string dc = tw.DrawCallsBaselineReady
+                    ? $"\ndraw calls baseline {tw.DrawCallsBaseline:0}  ->  trips at {tw.DrawCallsBaseline * _config.drawCallsBaselineMultiplier:0}"
+                    : string.Empty;
+                EditorGUILayout.HelpBox(
+                    $"Live baseline (this run): frame {tw.FrameBaselineMs:0.0} ms  ->  hitch at {hitch:0.0} ms{dc}",
+                    MessageType.None);
+            }
+            else
+            {
+                EditorGUILayout.LabelField("Baseline forms live during Play (relative to this project).", EditorStyles.miniLabel);
+            }
         }
 
         private static Color SeverityColor(string severity)

@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-07-06
+
+### Added
+- Live baseline readout in the window. The relative thresholds are "x baseline", but the
+  baseline itself was never shown - now, during Play, the window displays the rolling baseline
+  and the concrete trip thresholds it produces: a compact "baseline: frame X ms" line under
+  Runs, and a detailed "frame X ms -> hitch at Y ms, draw calls N -> trips at M" box under
+  Thresholds. Before the baseline warms (or when not playing) it says so.
+
 ## [0.2.2] - 2026-07-06
 
 ### Fixed

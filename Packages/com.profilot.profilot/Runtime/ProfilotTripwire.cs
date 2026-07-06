@@ -67,6 +67,13 @@ namespace Profilot
         private double _frameMsBaseline;
         private bool _frameBaselineWarm;
 
+        // Live baselines, exposed so the editor window can show the concrete numbers the
+        // relative thresholds are measured against.
+        public double FrameBaselineMs => _frameMsBaseline;
+        public bool FrameBaselineReady => _frameBaselineWarm;
+        public double DrawCallsBaseline => _drawCallsBaseline;
+        public bool DrawCallsBaselineReady => _baselineWarm;
+
         private readonly double[] _lastReportTime = new double[TripKindCount];
         private readonly int[] _suppressedSinceReport = new int[TripKindCount];
 
