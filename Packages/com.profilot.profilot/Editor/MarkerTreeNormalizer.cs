@@ -12,13 +12,41 @@ namespace Profilot.Editor
     /// and applies the trimming rule so a frame with thousands of markers stays small:
     /// keep a child if its self time is over ~1% of the frame or it allocated, then keep the
     /// top-N per level, cap depth, and fold the rest into a synthetic "&lt;other&gt;" node.
+    /// Depth is the one dimension deliberately NOT kept tight: Unity's scaffolding spends ~7
+    /// levels before reaching user code, so the tree is captured deep (<see cref="CaptureDepth"/>)
+    /// and the CLI decides how much of it to print (`diagnose --depth` / `--focus`), while
+    /// topMarkers is ranked over the frame at effectively unlimited depth so a deep marker can
+    /// never be invisible just because of where it sits.
     /// </summary>
     internal static class MarkerTreeNormalizer
     {
         private const float SelfTimeKeepFractionOfFrame = 0.01f; // 1%
         private const int TopChildrenPerLevel = 8;
-        private const int MaxDepth = 6;
         private const int TopMarkersCount = 12;
+
+        // How deep the STORED markerTree goes. Unity's own scaffolding eats ~7 levels before the
+        // first line of user code (PlayerLoop > UpdateScene > Update.ScriptRunBehaviourUpdate >
+        // BehaviourUpdate > EventSystem.Update > Instantiate > Instantiate.Awake > YourClass.Awake),
+        // so the old cap of 6 cut the tree off exactly where the answer starts: the culprit showed
+        // up childless, with self time nobody could break down. The CLI trims what it PRINTS back
+        // to its own default, so the on-the-wire payload is unchanged; the extra depth is what
+        // `diagnose --focus` / `--depth` re-root and drill into.
+        internal const int CaptureDepth = 16;
+
+        // Depth cap for the flat topMarkers ranking. Ranking used to share the tree's cap, so a
+        // marker deeper than that was invisible to topMarkers even when it owned the largest self
+        // time in the frame (this is what hid hand-placed Profiler.BeginSample markers at depth
+        // 8+). Ranking a node costs a handful of column reads and adds no bytes to the payload -
+        // the list is still the top N - so this is effectively "no limit", kept finite only as a
+        // recursion guard.
+        private const int RankDepth = 64;
+
+        // Hard ceiling on nodes emitted into one tree. Breadth is already bounded per level
+        // (TopChildrenPerLevel + the keep rule), but "allocated anything" is a loose keep rule, so
+        // a pathological alloc-heavy frame could still fan out. On hitting this the walk stops
+        // descending and says so ("truncated": true) rather than silently pretending it reached
+        // the leaves.
+        private const int MaxNodes = 4000;
 
         private struct Marker
         {
@@ -90,7 +118,8 @@ namespace Profilot.Editor
             topMarkersJson = top.ToString();
 
             var tree = new StringBuilder();
-            WriteNode(view, startId, tree, keepMs, 0, rankByAlloc);
+            int budget = MaxNodes;
+            WriteNode(view, startId, tree, keepMs, 0, rankByAlloc, ref budget);
             markerTreeJson = tree.ToString();
         }
 
@@ -207,9 +236,15 @@ namespace Profilot.Editor
             };
         }
 
+        /// <summary>
+        /// Walks the frame and gathers every rankable marker, at any depth, into the flat list
+        /// topMarkers is drawn from. This walk is deliberately NOT bounded by the tree's depth
+        /// cap: topMarkers must describe the FRAME, not the trimmed tree, or the frame's biggest
+        /// self-time marker can be missing from the list purely because it sits deep.
+        /// </summary>
         private static void CollectAll(HierarchyFrameDataView view, int id, List<Marker> acc, int depth)
         {
-            if (depth > MaxDepth)
+            if (depth > RankDepth)
                 return;
 
             var children = new List<int>();
@@ -243,8 +278,9 @@ namespace Profilot.Editor
         }
 
         private static void WriteNode(HierarchyFrameDataView view, int id, StringBuilder sb, float keepMs,
-            int depth, bool rankByAlloc)
+            int depth, bool rankByAlloc, ref int budget)
         {
+            budget--;
             Marker m = Read(view, id);
             sb.Append('{');
             sb.Append("\"name\":").Append(Json.Str(m.Name));
@@ -253,8 +289,17 @@ namespace Profilot.Editor
             sb.Append(",\"gcAllocBytes\":").Append(Json.Num(m.GcBytes));
             sb.Append(",\"calls\":").Append(Json.Num(m.Calls));
 
+            // Why this node has no children in the payload, when it does have children in the
+            // frame. Without it a cut node is indistinguishable from a genuine leaf - which is
+            // exactly how a 1512ms Awake() came back looking like it had nothing underneath.
+            string truncated = null;
+
             var children = new List<int>();
-            if (depth < MaxDepth)
+            if (depth >= CaptureDepth)
+                truncated = "depth";
+            else if (budget <= 0)
+                truncated = "budget";
+            else
                 view.GetItemChildren(id, children);
 
             // Read each child's self/alloc ONCE (each read is a native call), dropping editor
@@ -307,7 +352,7 @@ namespace Profilot.Editor
                 for (int i = 0; i < kept.Count; i++)
                 {
                     if (i > 0) sb.Append(',');
-                    WriteNode(view, kept[i], sb, keepMs, depth + 1, rankByAlloc);
+                    WriteNode(view, kept[i], sb, keepMs, depth + 1, rankByAlloc, ref budget);
                 }
                 if (cutCount > 0)
                 {
@@ -321,6 +366,9 @@ namespace Profilot.Editor
                 }
                 sb.Append(']');
             }
+
+            if (truncated != null && view.HasItemChildren(id))
+                sb.Append(",\"truncated\":").Append(Json.Str(truncated));
 
             sb.Append('}');
         }

@@ -18,7 +18,9 @@
 ```
 profilot diagnose --last               # האירוע האחרון שנתפס
 profilot diagnose --id <eventId>       # אירוע ספציפי (הריצה האחרונה שמכילה אותו)
-profilot diagnose --id <eventId> --run <run>   # ...מריצה ספציפית
+profilot diagnose --id <eventId> --run <run>     # ...מריצה ספציפית
+profilot diagnose --id <eventId> --focus <שם marker>  # שרש מחדש את העץ במרקר הזה, כל תת-העץ שלו
+profilot diagnose --id <eventId> --depth <n>     # n רמות במקום ברירת המחדל
 profilot list                          # אירועים מכל הריצות (כל אחד מתויג ב-run שלו)
 profilot list --run <run>              # ...רק ריצה מסוימת
 profilot runs                          # רשימת הריצות, מהחדשה, עם ספירת אירועים
@@ -28,6 +30,15 @@ profilot status                        # כמה ריצות/אירועים, מה 
 כל session של Play הוא "ריצה" (`run`), מזוהה בזמן ההתחלה (למשל `2026-07-06_14-32-05`). התוצאות מקובצות לפי ריצה, אז אפשר לדעת מאיזו ריצה כל אירוע ולאבחן ריצה ספציפית.
 
 הפקודות מחזירות JSON ל-stdout (exit 0 תמיד; שגיאה מופיעה כשדה `status` בתוך ה-JSON). מבנה רשומת האירוע מתועד בסעיף 14 ב-SPEC.md - השדות המרכזיים: `trigger` (type/severity/metric/value/budget), `counters`, `cpuTimeMs`, `frameGcAllocBytes` (הקצאת ה-GC של הפריים שנתפס), `likelyCause` (רמז גס, למשל `"gc_pressure"`, או ריק), `markerTree`, ו-`topMarkers`. **הערה חשובה: Profilot לא לוכד allocation callstacks** - אין שדה `callstacks` ברשומה. המיפוי לקוד נעשה דרך שם ה-marker (ראה למטה), לא דרך backtrace.
+
+**עומק: ה-`markerTree` שמודפס כברירת מחדל הוא פרוסה, לא כל העץ.** Unity שורף בערך שבע רמות של scaffolding משלו לפני השורה הראשונה של קוד משתמש (`PlayerLoop > UpdateScene > Update.ScriptRunBehaviourUpdate > BehaviourUpdate > EventSystem.Update > Instantiate > Instantiate.Awake > TeamsScreen.Awake`), ולכן ברירת המחדל נגמרת בדיוק במקום שבו מתחילה התשובה. שני דגלים חופרים עמוק יותר:
+
+- `--focus <שם marker>` - משרש מחדש את העץ במרקר הזה ומדפיס את **כל** תת-העץ שלו בעומק מלא. זה הכלי העיקרי: לא 12 רמות של הכל, אלא הכל מתחת למרקר אחד. ההתאמה היא substring (case-insensitive), כי השמות האמיתיים ארוכים ומקושטים (`Assembly-CSharp.dll!::TeamsScreen.Awake() [Invoke]`).
+- `--depth <n>` - n רמות של כל העץ. ברירת המחדל לא השתנתה.
+
+**מתי לחפור.** כשמרקר של קוד משתמש חוזר בלי `children` אבל עם `selfTimeMs` גדול, או כש-`topMarkers` מראה מרקר שלא קיים ב-`markerTree` בכלל - זה סימן לחיתוך עומק, לא ל-leaf אמיתי. הרץ `--focus` על שם המרקר הזה לפני שאתה מסיק ש"אי אפשר לפרק את הזמן הזה". צומת שנחתך מסומן `"truncated": "depth"` (נגמרו הרמות) או `"truncated": "budget"` (הפריים היה רחב מדי) - צומת בלי `children` ובלי `truncated` הוא leaf אמיתי.
+
+**`topMarkers` מדורג על כל הפריים, לא על העץ החתוך.** מרקר עמוק יופיע ב-`topMarkers` גם אם הוא מתחת לעומק שנשמר בעץ (שם יושבים בדרך כלל מרקרים ידניים של `Profiler.BeginSample`). `markerTreeDepth` ברשומה אומר עד לאיזה עומק הלכה הלכידה בפועל.
 
 **מסלול דמו (best-effort).** המשתמש מדביק screenshot של ה-Profiler או טקסט. אין סכמה אכופה ואין call hierarchy אמין - **הנתונים חלקיים** (הכרעה 1). אבחן ממה שיש, וסמן במפורש בסעיף "ראיות" שהנתונים נקראו מ-screenshot ולכן עשויים להיות חלקיים. מיפוי לקוד במסלול הזה הוא best-effort בלבד.
 
@@ -44,7 +55,8 @@ profilot status                        # כמה ריצות/אירועים, מה 
 אין ב-Unity API שמחזיר "marker X = שורה Y", ו-Profilot לא לוכד callstacks - אתה מבצע את המיפוי בעצמך משם ה-marker, בסדר יורד של איכות:
 
 1. **שם ה-marker** (`topMarkers[].name`, או `markerTree`) - זה האות המרכזי, ולרוב מספיק. חלץ `Class.Method` (ראה פורמט השמות למטה), עשה grep בריפו ופתח את הקובץ.
-2. **הסקה משלך** - קרא את הקוד שמצאת ואמת שהוא אכן מסביר את הנתונים (הקצאה בלולאה, מחרוזות פר-פריים, וכו').
+2. **חפירה ב-`--focus`** - אם המרקר שמצאת הוא נקודת כניסה רחבה (`Awake`, `Start`, `Update` של מסך שלם) עם self time גדול, השם לבדו לא מספיק כדי להצביע על שורה. הרץ `profilot diagnose --id <eventId> --focus "<שם המרקר>"` וקרא את תת-העץ המלא שלו: הילד עם ה-`selfTimeMs`/`gcAllocBytes` הגדול הוא היעד האמיתי, והמרקר הרחב הוא רק הכתובת שלו.
+3. **הסקה משלך** - קרא את הקוד שמצאת ואמת שהוא אכן מסביר את הנתונים (הקצאה בלולאה, מחרוזות פר-פריים, וכו').
 
 **אין callstacks - אל תבטיח אותם.** גם ל-`gc_spike` אין `callstacks[]`; ההבדל היחיד שלו מ-`frame_hitch` הוא שה-`markerTree`/`topMarkers` שלו ממוינים לפי `gcAllocBytes` במקום לפי זמן, כך שה-marker המקצה עולה לראש. **אל תשלח את המשתמש "לתפוס gc_spike כדי לקבל callstack"** - הוא לא קיים. gc_spike כן שווה לתפוס כדי לראות את המקצה מדורג לראש, אבל התוצאה עדיין שם-marker, לא שורה.
 
@@ -54,6 +66,8 @@ profilot status                        # כמה ריצות/אירועים, מה 
 **תבנית שרשרת ה-scaffolding (חשוב ל-gc_spike).** ב-`topMarkers` של gc_spike תראה לרוב כמה markers עם **אותו `gcAllocBytes`** בדיוק, למשל:
 `UpdateScene` → `Update.ScriptRunBehaviourUpdate` → `BehaviourUpdate` → `GarbageGenerator.Update`.
 אלה לא ארבע בעיות - זו שרשרת קריאה אחת, וה-`gcAllocBytes` הוא מצטבר (כולל ילדים), ולכן זהה לאורכה. שלושת הראשונים הם scaffolding של לולאת Unity (לא קוד שאפשר לתקן); **ה-marker שמצביע על קוד משתמש - זה עם `Assembly-CSharp.dll!` או namespace אמיתי - הוא היעד למיפוי.** מפה אותו, לא את ה-scaffolding.
+
+**`runFallback: true` - עצור וקרא את זה לפני שאתה משווה מספרים.** `diagnose --id X` בלי `--run` מחזיר את הריצה **האחרונה שמכילה את X**, לא את הריצה האחרונה. כשתיקון מצליח והאיוונט מפסיק להיתפס, הפקודה ממשיכה להחזיר בשקט את המספרים של הריצה הישנה - וזה נקרא כ"אין שינוי" בדיוק כשהיה שיפור. כשהשדה `runFallback` קיים, הרשומה **אינה** המצב הנוכחי: `resolvedRun` הוא מאיפה היא באה, `latestRun` הוא הריצה החדשה, ו-`warning` מנסח את זה. במקרה כזה אל תדווח "לפני/אחרי" מהרשומה הזו - הרץ `profilot list --run <latestRun>` וראה מה נתפס בריצה החדשה. היעלמות האיוונט מהריצה האחרונה היא בעצמה התוצאה.
 
 **אותות נוספים ברשומה:** `dedup.count` הוא תדירות (count גבוה = הבעיה קורית כמעט בכל פריים, אות חזק); `frameIndexDelta` שונה מ-0 אומר שהפריים שנתפס אותר אחורה (תקין).
 

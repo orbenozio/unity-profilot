@@ -6,6 +6,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-24
+
+### Added
+- `profilot diagnose --focus <markerName>` re-roots the marker tree at one marker and returns its
+  whole subtree at full depth. The match is a case-insensitive substring, because real marker
+  names are long and decorated (`Assembly-CSharp.dll!::TeamsScreen.Awake() [Invoke]`). When
+  several markers match, the heaviest subtree wins and the rest are listed under
+  `focus.otherMatches`; when none match, the error carries `focusCandidates` so the retry is one
+  step rather than a guess.
+- `profilot diagnose --depth <n>` prints n levels instead of the default. The default is
+  unchanged, so payloads that already work keep working.
+- Event records carry `markerTreeDepth` (how deep the capture actually went), and any node whose
+  children were cut carries `"truncated": "depth"` or `"truncated": "budget"` - so a cut node is
+  no longer indistinguishable from a genuine leaf.
+- `diagnose` flags a record served from a run that is not the newest one: `runFallback: true`
+  plus `resolvedRun`, `latestRun`, and a `warning`. `--id` resolves to the newest run that
+  *contains* the event, so once a fix lands and the event stops being captured, the command kept
+  quietly serving the old run's numbers - which reads as "no change" exactly when the result was
+  an improvement. An explicitly pinned `--run` is not a fallback and is never flagged.
+
+### Fixed
+- The marker tree was cut at a fixed depth of 6, but Unity spends about seven levels of its own
+  scaffolding before the first line of user code (`PlayerLoop > UpdateScene >
+  Update.ScriptRunBehaviourUpdate > BehaviourUpdate > EventSystem.Update > Instantiate >
+  Instantiate.Awake > YourClass.Awake`). The tree therefore ended exactly where the answer began:
+  the responsible method came back childless, with a large self time nothing could break down.
+  The capture now stores 16 levels (bounded by a 4000-node ceiling) and the CLI decides how much
+  to print, so the default payload is unchanged and the extra depth is what `--focus` / `--depth`
+  drill into.
+- `topMarkers` was ranked over the trimmed tree, so a marker deeper than the tree's cap was
+  invisible even when it owned the frame's largest self time - which is where hand-placed
+  `Profiler.BeginSample` markers usually sit. It is now ranked over the whole frame at any depth.
+  This costs column reads, not payload bytes: the list is still the top N.
+- The editor window re-read and re-parsed every event file in the run on every repaint. It now
+  reloads only when the run's files actually change, keyed on a cheap count + newest-write-time
+  fingerprint.
+
 ## [0.3.0] - 2026-07-06
 
 ### Added

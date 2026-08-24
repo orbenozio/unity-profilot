@@ -199,3 +199,195 @@ test('diagnose --last: error on malformed latest.json', () => {
   const r = run(p, ['diagnose', '--last']);
   assert.equal(r.status, 'error');
 });
+
+// ---------------------------------------------------------------------------
+// Depth: --focus / --depth
+//
+// The chain below is the real shape of a Unity boot frame: seven levels of engine
+// scaffolding before the first line of user code, then hand-placed Profiler.BeginSample
+// markers under it. That is why a fixed shallow tree could never attribute the cost - it
+// ended exactly where the answer began.
+// ---------------------------------------------------------------------------
+
+const SCAFFOLD = [
+  'PlayerLoop',
+  'UpdateScene',
+  'Update.ScriptRunBehaviourUpdate',
+  'BehaviourUpdate',
+  'EventSystem.Update',
+  'Instantiate',
+  'Instantiate.Awake',
+  'Assembly-CSharp.dll!::TeamsScreen.Awake() [Invoke]', // depth 7 - the culprit
+  'DIAG.TS.LoadIcons', // depth 8 - invisible at the old fixed depth
+  'DIAG.TS.Inner', // depth 9
+];
+
+// A linear chain of the names above; each level also carries a cheap sibling so trimming
+// has something to choose between.
+function deepTree(names = SCAFFOLD) {
+  let node = null;
+  for (let i = names.length - 1; i >= 0; i--) {
+    const children = [];
+    if (node) children.push(node);
+    if (i > 0) children.push({ name: 'sibling' + i, selfTimeMs: 0.1, totalTimeMs: 0.1, gcAllocBytes: 0, calls: 1 });
+    node = {
+      name: names[i],
+      selfTimeMs: i === names.length - 1 ? 322 : 1,
+      totalTimeMs: 1512 - i * 100,
+      gcAllocBytes: 1000,
+      calls: 1,
+      ...(children.length ? { children } : {}),
+    };
+  }
+  return node;
+}
+
+function deepEvent(eventId = 'evt_frame_hitch_TeamsScreen.Awake', sessionId = '2026-06-25_10-00-00') {
+  const e = sampleEvent(eventId, 'frame_hitch', '2026-06-25T10:00:00Z', 'open', sessionId);
+  e.markerTree = deepTree();
+  e.markerTreeDepth = 16;
+  return e;
+}
+
+// Walks down the chain (skipping the filler siblings) so a test can assert what survived.
+function nodeAt(tree, depth) {
+  let n = tree;
+  for (let d = 0; d < depth; d++) {
+    if (!n || !n.children) return null;
+    n = n.children.find((c) => !String(c.name).startsWith('sibling')) || null;
+  }
+  return n;
+}
+
+test('diagnose: the default payload is unchanged - 6 levels, and it says it was cut', () => {
+  const p = makeProject([deepEvent()]);
+  const r = run(p, ['diagnose', '--last']);
+  assert.equal(r.markerTree.name, 'PlayerLoop');
+  assert.equal(nodeAt(r.markerTree, 6).name, 'Instantiate.Awake');
+  assert.equal(nodeAt(r.markerTree, 6).children, undefined);
+  assert.equal(nodeAt(r.markerTree, 6).truncated, 'depth'); // a cut, not a leaf
+  assert.equal(nodeAt(r.markerTree, 7), null);
+});
+
+test('diagnose --depth: reaches markers the default depth cuts off', () => {
+  const p = makeProject([deepEvent()]);
+  const r = run(p, ['diagnose', '--last', '--depth', '9']);
+  assert.equal(nodeAt(r.markerTree, 7).name, 'Assembly-CSharp.dll!::TeamsScreen.Awake() [Invoke]');
+  assert.equal(nodeAt(r.markerTree, 9).name, 'DIAG.TS.Inner');
+});
+
+test('diagnose --depth: beyond what was captured, says so', () => {
+  const p = makeProject([deepEvent()]);
+  const r = run(p, ['diagnose', '--last', '--depth', '40']);
+  assert.match(r.depthNote, /deeper than the captured depth 16/);
+});
+
+test('diagnose --depth: rejects a non-numeric value', () => {
+  const p = makeProject([deepEvent()]);
+  const r = run(p, ['diagnose', '--last', '--depth', 'lots']);
+  assert.equal(r.status, 'error');
+  assert.match(r.message, /Invalid --depth/);
+});
+
+test('diagnose --focus: re-roots at a substring match and returns the whole subtree', () => {
+  const p = makeProject([deepEvent()]);
+  const r = run(p, ['diagnose', '--last', '--focus', 'TeamsScreen.Awake']);
+  assert.equal(r.markerTree.name, 'Assembly-CSharp.dll!::TeamsScreen.Awake() [Invoke]');
+  assert.equal(r.focus.depth, 7);
+  assert.equal(r.focus.path[0], 'PlayerLoop');
+  assert.equal(r.focus.matchCount, 1);
+  // Full depth under the focus root - not a 6-level slice of it.
+  assert.equal(nodeAt(r.markerTree, 1).name, 'DIAG.TS.LoadIcons');
+  assert.equal(nodeAt(r.markerTree, 2).name, 'DIAG.TS.Inner');
+});
+
+test('diagnose --focus: matches a deep hand-placed marker too', () => {
+  const p = makeProject([deepEvent()]);
+  const r = run(p, ['diagnose', '--last', '--focus', 'DIAG.TS.LoadIcons']);
+  assert.equal(r.markerTree.name, 'DIAG.TS.LoadIcons');
+  assert.equal(r.focus.depth, 8);
+});
+
+test('diagnose --focus: several matches - heaviest wins, the rest are listed', () => {
+  const p = makeProject([deepEvent()]);
+  const r = run(p, ['diagnose', '--last', '--focus', 'DIAG.TS']);
+  assert.equal(r.focus.matchCount, 2);
+  assert.equal(r.markerTree.name, 'DIAG.TS.LoadIcons'); // the bigger totalTimeMs
+  assert.equal(r.focus.otherMatches[0].name, 'DIAG.TS.Inner');
+});
+
+test('diagnose --focus --depth: the subtree is trimmed too', () => {
+  const p = makeProject([deepEvent()]);
+  const r = run(p, ['diagnose', '--last', '--focus', 'TeamsScreen.Awake', '--depth', '1']);
+  assert.equal(r.markerTree.name, 'Assembly-CSharp.dll!::TeamsScreen.Awake() [Invoke]');
+  assert.equal(nodeAt(r.markerTree, 1).name, 'DIAG.TS.LoadIcons');
+  assert.equal(nodeAt(r.markerTree, 1).children, undefined);
+});
+
+test('diagnose --focus: no match returns an error plus the names that do exist', () => {
+  const p = makeProject([deepEvent()]);
+  const r = run(p, ['diagnose', '--last', '--focus', 'NoSuchMarker']);
+  assert.equal(r.status, 'error');
+  assert.match(r.message, /No marker in .* matches "NoSuchMarker"/);
+  assert.ok(r.focusCandidates.includes('DIAG.TS.Inner'));
+});
+
+test('diagnose --focus: rejects a missing value', () => {
+  const p = makeProject([deepEvent()]);
+  const r = run(p, ['diagnose', '--last', '--focus']);
+  assert.equal(r.status, 'error');
+  assert.match(r.message, /Missing value for --focus/);
+});
+
+test('diagnose --focus: clear error when the record has no marker tree', () => {
+  const e = deepEvent();
+  e.markerTree = null;
+  e.status = 'counters_only';
+  const p = makeProject([e]);
+  const r = run(p, ['diagnose', '--last', '--focus', 'Anything']);
+  assert.equal(r.status, 'error');
+  assert.match(r.message, /has no marker tree/);
+});
+
+// ---------------------------------------------------------------------------
+// Run fallback: --id silently serves an older run once the event stops reproducing
+// ---------------------------------------------------------------------------
+
+test('diagnose --id: warns when the event is missing from the newest run', () => {
+  const p = makeProject([
+    sampleEvent('evt_a_gc_spike', 'gc_spike', '2026-06-25T10:00:00Z', 'open', '2026-06-25_10-00-00'),
+    sampleEvent('evt_b_gc_spike', 'gc_spike', '2026-06-26T11:00:00Z', 'open', '2026-06-26_11-00-00'),
+  ]);
+  const r = run(p, ['diagnose', '--id', 'evt_a_gc_spike']);
+  assert.equal(r.runFallback, true);
+  assert.equal(r.resolvedRun, '2026-06-25_10-00-00');
+  assert.equal(r.latestRun, '2026-06-26_11-00-00');
+  assert.match(r.warning, /not the newest run/);
+});
+
+test('diagnose --id: no warning when the event is in the newest run', () => {
+  const p = makeProject([
+    sampleEvent('evt_a_gc_spike', 'gc_spike', '2026-06-25T10:00:00Z', 'open', '2026-06-25_10-00-00'),
+    sampleEvent('evt_a_gc_spike', 'gc_spike', '2026-06-26T11:00:00Z', 'open', '2026-06-26_11-00-00'),
+  ]);
+  const r = run(p, ['diagnose', '--id', 'evt_a_gc_spike']);
+  assert.equal(r.runFallback, undefined);
+  assert.equal(r.warning, undefined);
+});
+
+test('diagnose --id --run: an explicitly pinned older run is not a fallback', () => {
+  const p = makeProject([
+    sampleEvent('evt_a_gc_spike', 'gc_spike', '2026-06-25T10:00:00Z', 'open', '2026-06-25_10-00-00'),
+    sampleEvent('evt_a_gc_spike', 'gc_spike', '2026-06-26T11:00:00Z', 'open', '2026-06-26_11-00-00'),
+  ]);
+  const r = run(p, ['diagnose', '--id', 'evt_a_gc_spike', '--run', '2026-06-25_10-00-00']);
+  assert.equal(r.runFallback, undefined);
+});
+
+test('diagnose --last: warns when latest.json predates the newest run', () => {
+  const p = makeProject([sampleEvent('evt_a_gc_spike', 'gc_spike', '2026-06-25T10:00:00Z', 'open', '2026-06-25_10-00-00')]);
+  fs.mkdirSync(runDir(p, '2026-06-26_11-00-00'), { recursive: true }); // a newer run that caught nothing
+  const r = run(p, ['diagnose', '--last']);
+  assert.equal(r.runFallback, true);
+  assert.equal(r.latestRun, '2026-06-26_11-00-00');
+});

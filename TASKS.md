@@ -35,6 +35,24 @@ not to find magic absolute numbers.
 - [ ] Measure M7 (LLM cost per dev-hour) and set the Q5 threshold (owner decision)
 - [ ] Window accessibility polish (SPEC.md section 11)
 
+### Calibration findings surfaced by dogfooding on a real project (Match Masters)
+- [x] Fixed: the marker tree's fixed depth of 6 cut it off before user code. Unity burns ~7
+      levels of scaffolding first, so `AppManager.Awake()` (1512ms) and `TeamsScreen.Awake()`
+      (412ms) came back childless with unexplainable self time, and hand-placed
+      `Profiler.BeginSample` markers at depth 8+ never appeared at all. Capture now stores 16
+      levels; the CLI prints a depth-6 slice by default so payloads are unchanged.
+- [x] Added: `diagnose --focus <marker>` re-roots the tree at one marker and returns its whole
+      subtree - the actual need was not "12 levels of everything" but "everything under one
+      marker", which also keeps the payload small.
+- [x] Added: `diagnose --depth <n>`.
+- [x] Fixed: `topMarkers` was ranked over the trimmed tree, so a deep marker was invisible even
+      when it owned the frame's largest self time. Now ranked over the whole frame at any depth.
+- [x] Fixed: `diagnose --id` silently fell back to an older run once a fix made the event stop
+      reproducing, which read as "no change" on a 60% improvement. The output now carries
+      `runFallback` / `resolvedRun` / `latestRun` / `warning`.
+- [x] Fixed: the window re-parsed every event file on every repaint (now cached on a
+      count + newest-write-time fingerprint), so the deeper records do not make it slower.
+
 ### Calibration findings surfaced by the golden harness (verified live)
 - [x] Fixed: dominant marker was a generic PlayerLoop phase (`UpdateScene`) - ranking now
       descends through but skips structural phases, so the user method surfaces.

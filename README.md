@@ -70,6 +70,19 @@ profilot list                     # summaries of the captured events
 profilot status                   # is the store present, how many events, what is latest
 ```
 
+Unity spends about seven levels of its own scaffolding before the first line of your code, so the
+marker that actually costs you often sits below the slice `diagnose` prints by default. Two flags
+go deeper without inflating every payload:
+
+```
+profilot diagnose --id <eventId> --focus "TeamsScreen.Awake"   # re-root at that marker, full subtree
+profilot diagnose --id <eventId> --depth 12                    # more levels of the whole tree
+```
+
+`--focus` matches on a substring of the marker name, since real names are long and decorated
+(`Assembly-CSharp.dll!::TeamsScreen.Awake() [Invoke]`). See
+[`cli/README.md`](cli/README.md) for the full behaviour.
+
 ## Repository contents
 
 | Path | What |

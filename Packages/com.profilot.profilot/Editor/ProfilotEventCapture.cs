@@ -429,6 +429,16 @@ namespace Profilot.Editor
             sb.Append('}');
 
             sb.Append(",\"markerTree\":").Append(markerTreeJson);
+
+            // How deep the stored tree goes. The CLI prints a shallower slice by default and uses
+            // this to tell the reader whether a deeper `--depth`/`--focus` request is answerable
+            // from the record or needs a re-capture. Nodes cut short also say so in-band
+            // ("truncated": "depth" | "budget"), so a cut node never reads as a genuine leaf.
+            sb.Append(",\"markerTreeDepth\":").Append(Json.Num(MarkerTreeNormalizer.CaptureDepth));
+
+            // Ranked over the WHOLE frame at any depth - not over the trimmed tree - so the
+            // frame's biggest self-time / allocating marker is here even when it sits below the
+            // tree's depth cap (which is where hand-placed Profiler.BeginSample markers live).
             sb.Append(",\"topMarkers\":").Append(topMarkersJson);
 
             sb.Append(",\"dedup\":{");

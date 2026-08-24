@@ -35,6 +35,16 @@ namespace Profilot.Editor
         private string _selectedRun;
         private ProfilotConfig _config;
 
+        // Parsed event cache. OnGUI runs on every repaint (and the window repaints twice a second
+        // on its own), while LoadEvents reads and JSON-parses every event file in the run - so
+        // without this the whole store is re-parsed several times a second for a list that only
+        // changes when a trip lands. The records also carry a deep marker tree now, which makes
+        // that re-parse meaningfully more expensive. Keyed on a cheap fingerprint of the run's
+        // files, so a new or rewritten event still shows up on the next repaint.
+        private string _cachedRun;
+        private string _cachedStamp;
+        private List<EventSummary> _cachedEvents;
+
         // Accent colors for section headers / states.
         private static readonly Color Blue = new Color(0.40f, 0.65f, 0.95f);
         private static readonly Color Orange = new Color(0.95f, 0.7f, 0.3f);
@@ -484,7 +494,40 @@ namespace Profilot.Editor
             }
         }
 
-        private static List<EventSummary> LoadEvents(string runId)
+        private List<EventSummary> LoadEvents(string runId)
+        {
+            string stamp = RunStamp(runId);
+            if (_cachedEvents != null && _cachedRun == runId && _cachedStamp == stamp)
+                return _cachedEvents;
+
+            _cachedRun = runId;
+            _cachedStamp = stamp;
+            _cachedEvents = ReadEvents(runId);
+            return _cachedEvents;
+        }
+
+        /// <summary>
+        /// Cheap fingerprint of a run's event files: how many there are and the newest write time.
+        /// A trip either adds a file or rewrites one (dedup overwrites), so both cases move the
+        /// stamp - without opening or parsing anything.
+        /// </summary>
+        private static string RunStamp(string runId)
+        {
+            List<string> files = ProfilotEventStore.EventFiles(runId);
+            long newest = 0;
+            foreach (string path in files)
+            {
+                try
+                {
+                    long t = File.GetLastWriteTimeUtc(path).Ticks;
+                    if (t > newest) newest = t;
+                }
+                catch { /* a file deleted between the listing and the stat just does not count */ }
+            }
+            return files.Count + ":" + newest;
+        }
+
+        private static List<EventSummary> ReadEvents(string runId)
         {
             var result = new List<EventSummary>();
             foreach (string path in ProfilotEventStore.EventFiles(runId))
