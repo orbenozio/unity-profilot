@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-03
+
+### Fixed
+- Deep capture found no profiler frame in a project where the Profiler window's Record was off
+  (any fresh project, and batchmode): every event came back `status: "error"`, `frameIndex: -1`,
+  with no markers, so nothing mapped to code. Capture now arms `ProfilerDriver` recording
+  alongside `Profiler.enabled` on entering Play, and turns Record back off on exit if it was off
+  before. Found by an end-to-end install test on a fresh Unity 6000.3 project.
+
 ## [0.5.0] - 2026-11-03
 
 ### Added

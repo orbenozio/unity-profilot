@@ -93,20 +93,29 @@ not to find magic absolute numbers.
       `profilot init` + `status` on a fresh project skeleton.
 
 ### Release workflow (repeat each version)
-1. Bump `Packages/com.profilot.profilot/package.json` and `cli/package.json` to the same version
-   + move CHANGELOG `[Unreleased]` -> `[x.y.z]`.
+1. Bump `Packages/com.profilot.profilot/package.json` + move CHANGELOG `[Unreleased]` -> `[x.y.z]`.
+   Bump `cli/package.json` to the same version only when the CLI changed (a package-only patch
+   leaves npm alone).
 2. Commit on main, `git tag vX.Y.Z`, push main + tag.
 3. Move the moving branch: `git branch -f release vX.Y.Z && git push -f origin release`.
 4. `gh release create vX.Y.Z`. Consuming projects on `#release` just Refresh in Package Manager.
-5. `cd cli && npm publish` (prepack copies the guide in).
+5. If the CLI changed: `cd cli && npm publish` (prepack copies the guide in).
 
 - [x] Released v0.5.0: GitHub release + first npm publish of `profilot`, verified by a
       registry install into a clean prefix + `profilot init` on a fresh project skeleton.
       npm publish needs 2FA (browser auth), so step 5 of the workflow is Or's.
 
+- [x] End-to-end install test in real Unity (6000.3.7f1, headless): fresh project, npm
+      `profilot init`, Package Manager resolved `#release` to v0.5.0, a PlayMode run caught a
+      per-frame allocation. Surfaced a real bug - capture never armed `ProfilerDriver`
+      recording, so in a project with the Profiler's Record off every event had no frame and
+      no markers. Fixed in v0.5.1; re-run maps the event to `LeakyInventory.Update()`.
+
 ### Todo
-- [ ] End-to-end install test in real Unity: fresh 6000.3 project, `profilot init`, Package
-      Manager resolves `#release`, Play Mode catches an event, Claude Code diagnoses it
+- [ ] Have Claude Code diagnose a captured event in a fresh project (the last hop of the E2E,
+      covered so far only by the CLI output)
+- [ ] Make `CaptureIntegrationTests` assert a mapped marker (not just "an event exists"), so a
+      no-frame regression like the v0.5.1 bug fails the suite
 - [ ] English version of the diagnosis guide for public users (today it is Hebrew)
 - [ ] Product-facing README / getting-started (technical-product-writer pass)
 

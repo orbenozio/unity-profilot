@@ -142,12 +142,41 @@ namespace Profilot.Editor
                 EditorPrefs.SetBool(DeepCaptureKey, value);
                 // Apply immediately so toggling mid-Play takes effect from now on.
                 if (EditorApplication.isPlaying)
-                    Profiler.enabled = value;
+                    ArmRecording(value);
+            }
+        }
+
+        // The Profiler window's Record state from before Play, so we can hand it back on exit
+        // (null = we did not touch it this run).
+        private static bool? _driverWasEnabled;
+
+        // Profiler.enabled alone only arms the runtime side. The Editor keeps frames for
+        // ProfilerDriver only while ProfilerDriver.enabled (the Profiler window's Record button)
+        // is on, and that is off in a fresh project or in batchmode - every capture then found
+        // no frame (frameIndex -1, status "error", no markers). It worked in dogfooding only
+        // because Record happened to be on there. So arm both.
+        private static void ArmRecording(bool on)
+        {
+            Profiler.enabled = on;
+            if (on && !ProfilerDriver.enabled)
+            {
+                if (_driverWasEnabled == null)
+                    _driverWasEnabled = false;
+                ProfilerDriver.enabled = true;
             }
         }
 
         private static void OnPlayModeChanged(PlayModeStateChange change)
         {
+            if (change == PlayModeStateChange.ExitingPlayMode)
+            {
+                // Leave the Profiler window the way the user had it.
+                if (_driverWasEnabled == false)
+                    ProfilerDriver.enabled = false;
+                _driverWasEnabled = null;
+                return;
+            }
+
             if (change != PlayModeStateChange.EnteredPlayMode)
                 return;
 
@@ -166,7 +195,7 @@ namespace Profilot.Editor
             // Arm the profiler for marker->code mapping (on by default - it was measured to
             // add negligible per-frame cost). Off only if the user opted into counter-only mode
             // for maximum Editor speed.
-            Profiler.enabled = DeepCapture;
+            ArmRecording(DeepCapture);
 
             ProfilotTripChannel.Clear();
             Dedup.Clear();
