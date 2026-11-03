@@ -391,3 +391,73 @@ test('diagnose --last: warns when latest.json predates the newest run', () => {
   assert.equal(r.runFallback, true);
   assert.equal(r.latestRun, '2026-06-26_11-00-00');
 });
+
+// --- init ----------------------------------------------------------------------------------------
+
+function makeUnityProject(manifest = { dependencies: { 'com.unity.ugui': '2.0.0' } }) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'profilot-unity-'));
+  fs.mkdirSync(path.join(root, 'Packages'));
+  fs.mkdirSync(path.join(root, 'ProjectSettings'));
+  fs.writeFileSync(path.join(root, 'Packages', 'manifest.json'), JSON.stringify(manifest, null, 2));
+  return root;
+}
+
+const stepOf = (r, name) => r.steps.find((s) => s.step === name);
+
+test('init: wires the package, the guide and the CLAUDE.md import into a fresh project', () => {
+  const p = makeUnityProject();
+  const r = run(p, ['init']);
+  assert.equal(r.status, 'ok');
+  assert.equal(stepOf(r, 'package').result, 'added');
+  assert.equal(stepOf(r, 'guide').result, 'added');
+  assert.equal(stepOf(r, 'claudeMd').result, 'created');
+  const manifest = JSON.parse(fs.readFileSync(path.join(p, 'Packages', 'manifest.json'), 'utf8'));
+  assert.match(manifest.dependencies['com.profilot.profilot'], /unity-profilot\.git\?path=.*#release$/);
+  assert.equal(manifest.dependencies['com.unity.ugui'], '2.0.0');
+  assert.ok(fs.existsSync(path.join(p, '.claude', 'profilot-diagnosis-guide.md')));
+  assert.match(fs.readFileSync(path.join(p, 'CLAUDE.md'), 'utf8'), /@\.claude\/profilot-diagnosis-guide\.md/);
+});
+
+test('init: a second run changes nothing', () => {
+  const p = makeUnityProject();
+  run(p, ['init']);
+  const claudeMd = fs.readFileSync(path.join(p, 'CLAUDE.md'), 'utf8');
+  const r = run(p, ['init']);
+  assert.deepEqual(r.steps.map((s) => s.result), ['unchanged', 'unchanged', 'unchanged']);
+  assert.equal(fs.readFileSync(path.join(p, 'CLAUDE.md'), 'utf8'), claudeMd);
+});
+
+test('init: keeps an existing CLAUDE.md and a pinned package version', () => {
+  const pinned = 'https://github.com/orbenozio/unity-profilot.git?path=/Packages/com.profilot.profilot#v0.2.0';
+  const p = makeUnityProject({ dependencies: { 'com.profilot.profilot': pinned } });
+  fs.writeFileSync(path.join(p, 'CLAUDE.md'), '# My game\n\nHouse rules.');
+  const r = run(p, ['init']);
+  assert.equal(stepOf(r, 'package').result, 'unchanged');
+  assert.equal(stepOf(r, 'claudeMd').result, 'added');
+  const md = fs.readFileSync(path.join(p, 'CLAUDE.md'), 'utf8');
+  assert.ok(md.startsWith('# My game\n\nHouse rules.\n\n## Profilot'));
+  const manifest = JSON.parse(fs.readFileSync(path.join(p, 'Packages', 'manifest.json'), 'utf8'));
+  assert.equal(manifest.dependencies['com.profilot.profilot'], pinned);
+});
+
+test('init: finds the project root from a subfolder', () => {
+  const p = makeUnityProject();
+  const sub = path.join(p, 'Assets', 'Scripts');
+  fs.mkdirSync(sub, { recursive: true });
+  const r = run(p, ['init', '--path', sub, '--no-package']);
+  assert.equal(r.status, 'ok');
+  assert.equal(fs.realpathSync(r.projectRoot), fs.realpathSync(p));
+  assert.equal(stepOf(r, 'package').result, 'skipped');
+});
+
+test('init: error outside a Unity project', () => {
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'profilot-empty-'));
+  const r = run(empty, ['init']);
+  assert.equal(r.status, 'error');
+  assert.match(r.message, /No Unity project found/);
+});
+
+test('--version prints the CLI version', () => {
+  const r = run(os.tmpdir(), ['--version']);
+  assert.equal(r.version, require('./package.json').version);
+});

@@ -84,17 +84,29 @@ not to find magic absolute numbers.
       Always-latest through a moving `release` branch (fast-forward to each new release);
       `#release` for latest, `#v0.1.0` to pin.
 
+- [x] Name locked: `profilot` (npm, CLI command, package display name). Domain still open.
+- [x] CLI packaged for npm as `profilot` 0.5.0 (`files`, repository metadata, prepack copies the
+      guide + LICENSE in), version in lockstep with the Unity package.
+- [x] `profilot init`: one-step install - manifest dependency, guide into `.claude/`, `@import`
+      in CLAUDE.md. Idempotent, covered by the CLI test suite.
+- [x] Packed-tarball install test: `npm install -g` of the tarball into a clean prefix, then
+      `profilot init` + `status` on a fresh project skeleton.
+
 ### Release workflow (repeat each version)
-1. Bump `Packages/com.profilot.profilot/package.json` version + move CHANGELOG `[Unreleased]` -> `[x.y.z]`.
+1. Bump `Packages/com.profilot.profilot/package.json` and `cli/package.json` to the same version
+   + move CHANGELOG `[Unreleased]` -> `[x.y.z]`.
 2. Commit on main, `git tag vX.Y.Z`, push main + tag.
 3. Move the moving branch: `git branch -f release vX.Y.Z && git push -f origin release`.
 4. `gh release create vX.Y.Z`. Consuming projects on `#release` just Refresh in Package Manager.
+5. `cd cli && npm publish` (prepack copies the guide in).
+
+### In progress
+- [ ] First npm publish (needs `npm login` by Or), then release v0.5.0 per the workflow above
 
 ### Todo
-- [ ] Lock the name / npm handle / domain (Q6, owner decision) - blocks npm publish
-- [ ] Publish the CLI to npm (`profilot`), bump from 0.0.1 (or document `npm link` from `cli/`)
-- [ ] Ship the project-guidance file + one-step install instructions (copy/link into CLAUDE.md)
-- [ ] End-to-end install test from a clean machine / fresh project (stranger can run it)
+- [ ] End-to-end install test in real Unity: fresh 6000.3 project, `profilot init`, Package
+      Manager resolves `#release`, Play Mode catches an event, Claude Code diagnoses it
+- [ ] English version of the diagnosis guide for public users (today it is Hebrew)
 - [ ] Product-facing README / getting-started (technical-product-writer pass)
 
 ## Owner decisions still open (from SPEC.md)

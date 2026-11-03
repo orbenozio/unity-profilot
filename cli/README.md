@@ -4,6 +4,17 @@ Pure-transport CLI for Profilot. It reads the per-run file store the Unity edito
 (`Library/Profilot/runs/<run>/`) and prints structured JSON to stdout for Claude Code. It never
 calls an LLM and never writes to the store.
 
+## Install
+
+```bash
+npm install -g profilot
+profilot init          # from the Unity project folder - package, guide, CLAUDE.md import
+```
+
+`init` is the only command that writes, and only to project config (`Packages/manifest.json`,
+`.claude/profilot-diagnosis-guide.md`, `CLAUDE.md`). It is idempotent. `--path <dir>` targets
+another folder, `--no-package` leaves the manifest alone.
+
 ## Commands
 
 ```
@@ -16,6 +27,7 @@ profilot list                            # event summaries across all runs (each
 profilot list --run <run>                # ...only that run
 profilot runs                            # the runs, newest first, with event counts
 profilot status                          # store present? run count, event count, latest
+profilot --version                       # the CLI version
 ```
 
 Each Play Mode session is a "run", identified by its start time (e.g. `2026-07-06_14-32-05`).

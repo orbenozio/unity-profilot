@@ -1,12 +1,17 @@
 {
   "name": "profilot",
-  "version": "0.0.1",
+  "version": "0.5.0",
   "description": "CLI for Profilot - exposes captured Unity Profiler events to Claude Code as structured JSON.",
   "bin": {
     "profilot": "index.js"
   },
+  "files": [
+    "index.js",
+    "profilot-diagnosis-guide.md"
+  ],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "prepack": "node -e \"const fs=require('fs');fs.copyFileSync('../profilot-diagnosis-guide.md','profilot-diagnosis-guide.md');fs.copyFileSync('../LICENSE','LICENSE')\""
   },
   "type": "commonjs",
   "engines": {
@@ -14,10 +19,21 @@
   },
   "keywords": [
     "unity",
+    "unity3d",
     "profiler",
     "performance",
-    "claude"
+    "claude",
+    "claude-code"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/orbenozio/unity-profilot.git",
+    "directory": "cli"
+  },
+  "homepage": "https://github.com/orbenozio/unity-profilot#readme",
+  "bugs": {
+    "url": "https://github.com/orbenozio/unity-profilot/issues"
+  },
   "author": "Or Benozio",
   "license": "MIT"
 }

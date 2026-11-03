@@ -27,31 +27,34 @@ and Claude Code does the interpreting.
 
 ## Installation
 
-Two pieces: the Unity package (captures the events) and the Node CLI (exposes them to Claude Code).
+Requires Unity 6000.3 or newer and Node.js 16 or newer. Two commands, from the Unity project
+folder:
 
-1. **Unity package** - add to the target project's `Packages/manifest.json`, under `dependencies`:
+```bash
+npm install -g profilot
+profilot init
+```
 
-   ```json
-   "com.profilot.profilot": "https://github.com/orbenozio/unity-profilot.git?path=/Packages/com.profilot.profilot#release"
-   ```
+`profilot init` wires the project up in three places, and is safe to re-run (after an upgrade it
+just refreshes the guide):
 
-   `#release` always resolves to the latest release; pin an exact version with `#v0.1.0` instead.
-   Requires Unity 6000.3 or newer. No scene setup - the tripwire boots itself in Play Mode, and
-   events are written to `Library/Profilot/events/` inside the target project.
+- **Unity package** - adds `com.profilot.profilot` to `Packages/manifest.json`, pointing at
+  `https://github.com/orbenozio/unity-profilot.git?path=/Packages/com.profilot.profilot#release`.
+  `#release` always resolves to the latest release; to pin an exact version, change it to
+  `#v0.5.0`. An existing entry is left as it is. Skip this step with `--no-package`.
+- **Guidance for Claude Code** - writes
+  [`profilot-diagnosis-guide.md`](profilot-diagnosis-guide.md) to `.claude/`, so the agent knows
+  when to run the CLI and how to read its output.
+- **CLAUDE.md** - adds an `@.claude/profilot-diagnosis-guide.md` import (creating the file if
+  needed, appending to it otherwise).
 
-2. **CLI** - from a clone of this repo:
+Then open the project in Unity so Package Manager resolves the package. No scene setup - the
+tripwire boots itself in Play Mode, and events are written to `Library/Profilot/runs/` inside the
+project. The CLI finds that store by walking up from the working directory, or set
+`PROFILOT_PROJECT` to the project root.
 
-   ```bash
-   cd cli && npm link
-   ```
-
-   This makes the `profilot` command available. It finds the event store by walking up from the
-   working directory to the Unity project root (the nearest folder containing
-   `Library/Profilot/events`), or set `PROFILOT_PROJECT` to that root.
-
-3. **Guidance for Claude Code** - copy or link
-   [`profilot-diagnosis-guide.md`](profilot-diagnosis-guide.md) into the target project's
-   `CLAUDE.md`, so the agent knows when to run the CLI and how to read its output.
+Working on Profilot itself? Use `cd cli && npm link` instead of the npm install, so the command
+runs from your clone.
 
 ## Usage
 

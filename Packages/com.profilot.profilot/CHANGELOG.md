@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-03
+
+### Added
+- The CLI is published to npm as `profilot` (`npm install -g profilot`), so it no longer needs a
+  clone of this repo. Its version now moves in lockstep with the package.
+- `profilot init` - one-step install into a Unity project: adds the package to
+  `Packages/manifest.json`, writes the diagnosis guide to `.claude/`, and imports it from
+  `CLAUDE.md`. Idempotent; an existing package entry (for example a pinned version) is kept.
+  `--path <dir>` targets another folder, `--no-package` skips the manifest.
+- `profilot --version`.
+
 ## [0.4.0] - 2026-08-24
 
 ### Added

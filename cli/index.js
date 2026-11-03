@@ -4,7 +4,8 @@
 // Profilot CLI (SPEC.md section 14). Pure transport: it reads the per-run file store the Unity
 // editor layer writes (Library/Profilot/runs/<run>/evt_*.json, plus a top-level latest.json and
 // reviews.json) and prints structured JSON to stdout for Claude Code. It never calls an LLM and
-// never writes to the store. Every command exits 0; failures are reported as a "status" field.
+// never writes to the store (`init`, the one-time setup, writes only project config files).
+// Every command exits 0; failures are reported as a "status" field.
 //
 // The one thing it does beyond copying bytes is choose how much of the stored marker tree to
 // print. The Unity side captures the tree deep enough to get past Unity's ~7 levels of PlayerLoop
@@ -377,9 +378,110 @@ function getFlag(argv, name) {
   return next && !next.startsWith('--') ? next : true;
 }
 
+// --- init: one-step install into a Unity project ------------------------------------------------
+// The only command that writes, and it never touches the event store. It wires a Unity project up
+// in the three places Profilot needs: the UPM dependency in Packages/manifest.json, the diagnosis
+// guide under .claude/, and an @import of that guide in CLAUDE.md. Every step is idempotent, so
+// re-running it after an upgrade just refreshes the guide.
+
+const PACKAGE_NAME = 'com.profilot.profilot';
+const PACKAGE_URL = 'https://github.com/orbenozio/unity-profilot.git?path=/Packages/com.profilot.profilot#release';
+const GUIDE_FILE = 'profilot-diagnosis-guide.md';
+const GUIDE_IMPORT = `@.claude/${GUIDE_FILE}`;
+
+// The published package carries the guide next to index.js (copied in by prepack); a clone run
+// through `npm link` reads it from the repo root instead, so there is one source of truth.
+function findGuide() {
+  for (const p of [path.join(__dirname, GUIDE_FILE), path.join(__dirname, '..', GUIDE_FILE)]) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+// A Unity project root is a folder with Packages/manifest.json and ProjectSettings/. Library/ is
+// not a usable marker here: it may not exist yet on a fresh clone.
+function findUnityRoot(start) {
+  let dir = path.resolve(start);
+  for (;;) {
+    if (fs.existsSync(path.join(dir, 'Packages', 'manifest.json')) && fs.existsSync(path.join(dir, 'ProjectSettings'))) {
+      return dir;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+function initManifest(root, skip) {
+  if (skip) return { step: 'package', result: 'skipped' };
+  const file = path.join(root, 'Packages', 'manifest.json');
+  let manifest;
+  try {
+    manifest = readJson(file);
+  } catch (e) {
+    return { step: 'package', result: 'error', message: `Packages/manifest.json is unreadable: ${e.message}` };
+  }
+  manifest.dependencies = manifest.dependencies || {};
+  const existing = manifest.dependencies[PACKAGE_NAME];
+  if (existing) return { step: 'package', result: 'unchanged', value: existing };
+  manifest.dependencies[PACKAGE_NAME] = PACKAGE_URL;
+  fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + '\n');
+  return { step: 'package', result: 'added', value: PACKAGE_URL };
+}
+
+function initGuide(root) {
+  const src = findGuide();
+  if (!src) return { step: 'guide', result: 'error', message: `${GUIDE_FILE} is missing from this install.` };
+  const dest = path.join(root, '.claude', GUIDE_FILE);
+  const content = fs.readFileSync(src, 'utf8');
+  const before = fs.existsSync(dest) ? fs.readFileSync(dest, 'utf8') : null;
+  if (before === content) return { step: 'guide', result: 'unchanged', path: dest };
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.writeFileSync(dest, content);
+  return { step: 'guide', result: before === null ? 'added' : 'updated', path: dest };
+}
+
+function initClaudeMd(root) {
+  const file = path.join(root, 'CLAUDE.md');
+  const before = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+  if (before.includes(GUIDE_IMPORT)) return { step: 'claudeMd', result: 'unchanged', path: file };
+  const section = `## Profilot\n\nPerformance diagnosis with Profilot - see the guide:\n\n${GUIDE_IMPORT}\n`;
+  const sep = before === '' ? '' : before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+  fs.writeFileSync(file, before + sep + section);
+  return { step: 'claudeMd', result: before === '' ? 'created' : 'added', path: file };
+}
+
+function cmdInit(argv) {
+  const pathFlag = getFlag(argv, '--path');
+  if (pathFlag === true) return { status: 'error', message: 'Missing value for --path <unityProjectRoot>.' };
+  const start = pathFlag || process.env.PROFILOT_PROJECT || process.cwd();
+  const root = findUnityRoot(start);
+  if (!root) {
+    return {
+      status: 'error',
+      message: `No Unity project found at or above ${path.resolve(start)} (looked for Packages/manifest.json + ProjectSettings/). Run this from the Unity project folder, or pass --path.`,
+    };
+  }
+  const steps = [initManifest(root, argv.includes('--no-package')), initGuide(root), initClaudeMd(root)];
+  const failed = steps.filter((s) => s.result === 'error');
+  return {
+    status: failed.length ? 'error' : 'ok',
+    projectRoot: root,
+    steps,
+    ...(failed.length ? { message: failed.map((s) => s.message).join(' ') } : {}),
+    next:
+      'Open the project in Unity (6000.3+) so Package Manager resolves Profilot, enter Play Mode and ' +
+      'reproduce the problem, then ask Claude Code to "diagnose the last Profilot event".',
+  };
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const command = argv[0];
+  if (command === '--version' || command === 'version') {
+    print({ status: 'ok', version: require('./package.json').version });
+    process.exit(0);
+  }
   const base = findBase();
   const runFlag = getFlag(argv, '--run');
   const run = typeof runFlag === 'string' ? runFlag : undefined;
@@ -395,6 +497,9 @@ function main() {
     case 'list':
       result = cmdList(base, run);
       break;
+    case 'init':
+      result = cmdInit(argv);
+      break;
     case 'diagnose': {
       const id = getFlag(argv, '--id');
       const opts = readShapeFlags(argv);
@@ -409,7 +514,7 @@ function main() {
     default:
       result = {
         status: 'error',
-        message: `Unknown command "${command || ''}". Usage: profilot <diagnose [--last|--id <eventId>] [--run <id>] [--focus <markerName>] [--depth <n>]|list [--run <id>]|runs|status>.`,
+        message: `Unknown command "${command || ''}". Usage: profilot <diagnose [--last|--id <eventId>] [--run <id>] [--focus <markerName>] [--depth <n>]|list [--run <id>]|runs|status|init [--path <dir>] [--no-package]|--version>.`,
       };
   }
 
