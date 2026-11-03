@@ -100,8 +100,9 @@ not to find magic absolute numbers.
 4. `gh release create vX.Y.Z`. Consuming projects on `#release` just Refresh in Package Manager.
 5. `cd cli && npm publish` (prepack copies the guide in).
 
-### In progress
-- [ ] First npm publish (needs `npm login` by Or), then release v0.5.0 per the workflow above
+- [x] Released v0.5.0: GitHub release + first npm publish of `profilot`, verified by a
+      registry install into a clean prefix + `profilot init` on a fresh project skeleton.
+      npm publish needs 2FA (browser auth), so step 5 of the workflow is Or's.
 
 ### Todo
 - [ ] End-to-end install test in real Unity: fresh 6000.3 project, `profilot init`, Package
