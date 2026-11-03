@@ -64,14 +64,19 @@ function runEventFiles(base, run) {
     .filter((f) => f.startsWith('evt_') && f.endsWith('.json') && !f.endsWith('.tmp'));
 }
 
-// Cross-run review decisions (eventId -> status), applied over the per-file value.
+// Before 0.7 the review buttons wrote "reviewed" / "not_a_real_issue"; the package maps them to
+// the new pair when it next saves, the CLI maps them on read so both agree meanwhile.
+const LEGACY_REVIEW = { reviewed: 'fixed', not_a_real_issue: 'ignored' };
+
+// Cross-run review decisions (eventId -> status), applied over the per-file value. Statuses:
+// open, fixed (muted, alerts again if it comes back much worse), regressed, ignored.
 function reviewMap(base) {
   const map = {};
   const p = path.join(base, 'reviews.json');
   if (!fs.existsSync(p)) return map;
   try {
     const data = readJson(p);
-    for (const it of data.items || []) if (it && it.id) map[it.id] = it.status;
+    for (const it of data.items || []) if (it && it.id) map[it.id] = LEGACY_REVIEW[it.status] || it.status;
   } catch (_) {
     // a corrupt reviews file just means no overlay
   }
@@ -256,12 +261,99 @@ function runFallback(rec, resolvedRun, runs) {
   };
 }
 
+// --- versions and compatibility --------------------------------------------------------------
+// The CLI, the Unity package and the project's copy of the guide are installed separately, so they
+// drift. Records say which schema wrote them; the package writes meta.json on every Play; the guide
+// copy is compared with the one this CLI ships.
+
+const SCHEMA_VERSION = 2;
+
+// Fields each schema added, so an older record can say exactly what it lacks instead of a field
+// silently reading as missing data.
+const SCHEMA_FIELDS = {
+  2: ['writerVersion', 'frameGcAllocBytes', 'likelyCause', 'markerTreeDepth', 'capturedFrameTimeMs', 'frameMatchesTrigger'],
+};
+
+function schemaOf(rec) {
+  const n = parseInt(rec && rec.schemaVersion, 10);
+  return Number.isFinite(n) ? n : 1;
+}
+
+// Adds a `compat` block to a record written by another schema. Nothing is added for a current one.
+function withCompat(rec) {
+  if (!rec || typeof rec !== 'object' || !rec.eventId) return rec;
+  const schema = schemaOf(rec);
+  if (schema === SCHEMA_VERSION) return rec;
+  if (schema > SCHEMA_VERSION) {
+    return {
+      ...rec,
+      compat: {
+        schemaVersion: schema,
+        cliSchemaVersion: SCHEMA_VERSION,
+        note: 'This record was written by a newer Profilot package than this CLI knows. Update the CLI: npm install -g profilot',
+      },
+    };
+  }
+  const missingFields = [];
+  for (let v = schema + 1; v <= SCHEMA_VERSION; v++) {
+    for (const f of SCHEMA_FIELDS[v] || []) if (!(f in rec)) missingFields.push(f);
+  }
+  return {
+    ...rec,
+    compat: {
+      schemaVersion: schema,
+      cliSchemaVersion: SCHEMA_VERSION,
+      writerVersion: rec.writerVersion || 'unknown',
+      missingFields,
+      note:
+        'Written by an older Profilot package. The missing fields are absent, not zero - do not infer ' +
+        'them. Re-capture with the current package for the full record.',
+    },
+  };
+}
+
+function guideState(base) {
+  const src = findGuide();
+  if (!src || !base) return 'unknown';
+  const copy = path.join(path.dirname(path.dirname(base)), '.claude', GUIDE_FILE);
+  if (!fs.existsSync(copy)) return 'missing';
+  return fs.readFileSync(copy, 'utf8') === fs.readFileSync(src, 'utf8') ? 'current' : 'outdated';
+}
+
+function versions(base) {
+  let meta = null;
+  const mp = base && path.join(base, 'meta.json');
+  if (mp && fs.existsSync(mp)) {
+    try {
+      meta = readJson(mp);
+    } catch (_) {
+      meta = null;
+    }
+  }
+  const out = {
+    cli: require('./package.json').version,
+    package: (meta && meta.packageVersion) || 'unknown',
+    schema: { cli: SCHEMA_VERSION, package: meta ? schemaOf(meta) : null },
+    guide: guideState(base),
+  };
+  const warnings = [];
+  if (out.schema.package != null && out.schema.package > SCHEMA_VERSION) {
+    warnings.push('The Unity package writes a newer schema than this CLI reads. Update the CLI: npm install -g profilot');
+  } else if (out.schema.package != null && out.schema.package < SCHEMA_VERSION) {
+    warnings.push('The Unity package is older than this CLI. Update it: Package Manager > Profilot > Update (or re-resolve #release).');
+  }
+  if (out.guide === 'outdated') warnings.push('The project guide copy is out of date. Run `profilot init` to refresh it.');
+  if (out.guide === 'missing') warnings.push('The project has no Profilot guide. Run `profilot init`.');
+  return { versions: out, ...(warnings.length ? { warnings } : {}) };
+}
+
 function cmdStatus(base) {
   if (!base) {
     return {
       status: 'no_data',
       message:
         'No Profilot store found. Enter Play Mode in the Unity Editor with Profilot installed so the tripwire can capture events.',
+      ...versions(null),
     };
   }
   const runs = listRuns(base);
@@ -277,7 +369,7 @@ function cmdStatus(base) {
       latest = null;
     }
   }
-  return { status: runs.length > 0 ? 'ok' : 'no_data', base, runCount: runs.length, eventCount, latest };
+  return { status: runs.length > 0 ? 'ok' : 'no_data', base, runCount: runs.length, eventCount, latest, ...versions(base) };
 }
 
 function cmdRuns(base) {
@@ -326,7 +418,7 @@ function cmdDiagnoseLast(base, opts) {
     const rec = withStale(withReview(readJson(file), reviewMap(base)), pointer.run, runs[0]);
     // latest.json is the last event WRITTEN, which can predate the newest run entirely - a run
     // that captured nothing leaves the pointer on the previous one. Same trap as --id.
-    return shapeTree(runFallback(rec, pointer.run, runs), opts);
+    return shapeTree(withCompat(runFallback(rec, pointer.run, runs)), opts);
   } catch (e) {
     return { status: 'error', message: `Event ${pointer.eventId} is unreadable: ${e.message}` };
   }
@@ -346,7 +438,7 @@ function cmdDiagnoseId(base, id, runFilter, opts) {
         const rec = withStale(withReview(readJson(file), reviewMap(base)), r, allRuns[0]);
         // Only warn on an IMPLICIT fallback. With --run the caller chose the run, so an older
         // one is the answer they asked for, not a surprise.
-        return shapeTree(runFilter ? rec : runFallback(rec, r, allRuns), opts);
+        return shapeTree(withCompat(runFilter ? rec : runFallback(rec, r, allRuns)), opts);
       } catch (e) {
         return { status: 'error', message: `Event ${id} is unreadable: ${e.message}` };
       }

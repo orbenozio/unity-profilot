@@ -93,12 +93,22 @@ is not in the repo (it quotes a private project's data).
   frames, a 60 ms stall, a 300-cube draw-call spike): v0.5.1 fails 3 of 4, v0.6.0 passes all,
   each event mapped to its method with `frameMatchesTrigger: true`. Host suite 3/3.
 
-### Todo (blocking, needs decisions)
-- [ ] B-5 schema / version compatibility between the CLI, the package and the guide
-- [ ] B-6 review buttons mute forever with no muted list (decide D-5)
-- [ ] B-7 Copy diagnose command loses the selected run
-- [ ] B-8 window says "monitoring" during warm-up / when not running
-- [ ] B-9 English diagnosis guide (depends on open question 1, audience)
+- [x] B-5 schemaVersion 2 + writerVersion, CLI `compat` block, meta.json, versions and
+      warnings in `profilot status`; CLI and package release together - v0.7.0
+- [x] B-6 Fixed / Ignore (D-5: regression = comes back 3x worse), Muted (N) group, state on the
+      card, old decisions migrated - v0.7.0
+- [x] B-7 copy always pins `--run`; primary button copies a prompt for Claude - v0.7.0
+- [x] B-8 honest states: not playing / warming up N/60 / watching / not running - v0.7.0
+- [x] B-9 English guide, "answer in the user's language" (open question 3) - v0.7.0
+- Verified: CLI 45/45, host suite 3/3 (asserts schema 2, writerVersion, meta.json), E2E with
+  seeded reviews: a 60 ms stall marked fixed at 5 ms came back `regressed` and alerted once,
+  BigLoader marked fixed at 40 MB stayed fixed at 4 MB, a legacy `not_a_real_issue` became
+  `ignored`. The window itself was not looked at (batchmode only).
+
+### Todo (open questions from the review)
+- [ ] D-6 default meaning of `--last` (latest event vs latest open / worst)
+- [ ] Open question 1 - who Profilot is for (sets S-34 to S-36, S-40, S-42)
+- [ ] N-1 deprecate npm `0.0.0-stage` (needs Or)
 
 ### Todo (should-fix seen during the B-2/B-3 work)
 - [ ] S-5 `PostLateUpdate.*` still ranks as a culprit (`evt_gc_spike_PostLateUpdate.BatchModeUpdate`)

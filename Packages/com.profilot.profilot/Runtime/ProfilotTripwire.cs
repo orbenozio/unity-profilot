@@ -78,6 +78,11 @@ namespace Profilot
         public double DrawCallsBaseline => _drawCallsBaseline;
         public bool DrawCallsBaselineReady => _baselineWarm;
 
+        // Warm-up progress, so the window can say "warming up" instead of claiming to watch
+        // before any threshold exists.
+        public int WarmupFramesDone => Mathf.Clamp(Time.frameCount - _enabledFrame, 0, WarmupFrames);
+        public bool WarmingUp => WarmupFramesDone < WarmupFrames;
+
         private readonly double[] _lastReportTime = new double[TripKindCount];
         private readonly int[] _suppressedSinceReport = new int[TripKindCount];
 

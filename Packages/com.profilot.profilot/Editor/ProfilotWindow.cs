@@ -10,7 +10,8 @@ namespace Profilot.Editor
     /// The Profilot editor window (SPEC.md section 9). A view over the per-run event store plus
     /// the settings surface: colored section headers, collapsible groups, tooltip-annotated
     /// parameters, and icon buttons for compact actions. Navigate runs, act on caught issues
-    /// (copy diagnose command, reviewed / not-an-issue / reopen), and tune thresholds/retention.
+    /// (copy a prompt or the diagnose command, fixed / ignore / reopen), and tune thresholds and
+    /// retention.
     /// </summary>
     internal sealed class ProfilotWindow : EditorWindow
     {
@@ -132,11 +133,48 @@ namespace Profilot.Editor
             EditorGUILayout.LabelField("Profilot", EditorStyles.boldLabel);
             GUILayout.FlexibleSpace();
             Color prev = GUI.color;
-            GUI.color = EditorApplication.isPlaying ? Green : Dim;
-            EditorGUILayout.LabelField(EditorApplication.isPlaying ? "● monitoring" : "○ not playing",
-                EditorStyles.miniLabel, GUILayout.Width(100));
+            string state = MonitorState(out Color color, out _);
+            GUI.color = color;
+            GUILayout.Label(state, EditorStyles.miniLabel);
             GUI.color = prev;
             EditorGUILayout.EndHorizontal();
+        }
+
+        /// <summary>
+        /// What the tripwire is actually doing right now, never more than that: it used to say
+        /// "monitoring" during the warm-up, before any threshold existed, and whenever Play was on.
+        /// `detail` is the longer explanation for the empty-run state.
+        /// </summary>
+        private static string MonitorState(out Color color, out string detail)
+        {
+            if (!EditorApplication.isPlaying)
+            {
+                color = Dim;
+                detail = "Enter Play Mode to start watching.";
+                return "○ not playing";
+            }
+
+            ProfilotTripwire tw = FindTripwire();
+            if (tw == null || !tw.isActiveAndEnabled)
+            {
+                color = Orange;
+                detail = "The Profilot tripwire is not in this Play session, so nothing is being checked. " +
+                         "Exit and re-enter Play Mode; if it stays like this, reimport the Profilot package.";
+                return "○ not running";
+            }
+
+            if (tw.WarmingUp || !tw.FrameBaselineReady)
+            {
+                color = Dim;
+                detail = $"Warming up (frame {tw.WarmupFramesDone}/{tw.WarmupFrames}) - the first frames after " +
+                         "Play are always slow, so nothing is checked until the baseline forms.";
+                return $"○ warming up {tw.WarmupFramesDone}/{tw.WarmupFrames}";
+            }
+
+            color = Green;
+            string mode = ProfilotEventCapture.DeepCapture ? string.Empty : ", counters only";
+            detail = $"Watching - baseline {tw.FrameBaselineMs:0.0} ms{mode}. No issues caught yet.";
+            return $"● watching{mode}";
         }
 
         private void DrawCaptureSection()
@@ -306,14 +344,31 @@ namespace Profilot.Editor
             }
             else
             {
+                // Fixed and ignored problems go into a collapsed group, so a mute is never
+                // invisible and never crowds out what still needs a look.
+                var active = new List<EventSummary>();
+                var muted = new List<EventSummary>();
+                foreach (EventSummary e in events)
+                {
+                    string review = ProfilotEventCapture.ReviewStatusOf(e.eventId);
+                    (review == "fixed" || review == "ignored" ? muted : active).Add(e);
+                }
+
                 Color prev = GUI.color;
-                GUI.color = Orange;
-                EditorGUILayout.LabelField($"⚠  {events.Count} issue(s) in this run", EditorStyles.miniBoldLabel);
+                GUI.color = active.Count > 0 ? Orange : Green;
+                EditorGUILayout.LabelField(active.Count > 0
+                        ? $"⚠  {active.Count} issue(s) in this run"
+                        : "No open issues in this run", EditorStyles.miniBoldLabel);
                 GUI.color = prev;
 
                 _scroll = EditorGUILayout.BeginScrollView(_scroll);
-                for (int i = 0; i < events.Count; i++)
-                    DrawEventCard(events[i]);
+                foreach (EventSummary e in active)
+                    DrawEventCard(e, _selectedRun);
+                if (muted.Count > 0 && FoldoutBar("Profilot.UI.Muted", $"Muted ({muted.Count})", Dim, false))
+                {
+                    foreach (EventSummary e in muted)
+                        DrawEventCard(e, _selectedRun);
+                }
                 EditorGUILayout.EndScrollView();
             }
         }
@@ -355,7 +410,7 @@ namespace Profilot.Editor
             EditorGUILayout.EndHorizontal();
         }
 
-        private void DrawEventCard(EventSummary e)
+        private void DrawEventCard(EventSummary e, string run)
         {
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
 
@@ -379,33 +434,62 @@ namespace Profilot.Editor
             EditorGUILayout.LabelField(new GUIContent($"top: {marker}", "The dominant marker - the code Profilot blames."), EditorStyles.miniLabel);
             EditorGUILayout.LabelField($"{t.metric} {t.value:0.##} (budget {t.budget:0.##})", EditorStyles.miniLabel);
 
-            if (GUILayout.Button(new GUIContent("Copy diagnose command", "Copies 'profilot diagnose --id ...' - paste it to Claude Code to get the fix."), GUILayout.Height(22)))
+            // The same event id exists in every run that hit the problem, and the CLI resolves a
+            // bare --id to the newest run containing it. Always pin the run the card belongs to,
+            // or picking an older run here would diagnose a different record.
+            string command = $"profilot diagnose --id {e.eventId} --run {run}";
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button(new GUIContent("Copy prompt for Claude",
+                    "Copies a ready prompt that tells Claude Code to run the diagnose command for this event " +
+                    "and run, find the code, and propose a fix."), GUILayout.Height(22)))
             {
-                EditorGUIUtility.systemCopyBuffer = $"profilot diagnose --id {e.eventId}";
+                EditorGUIUtility.systemCopyBuffer =
+                    $"Diagnose Profilot event {e.eventId} (run {run}): run `{command}`, find the code, and propose a fix.";
                 ShowNotification(new GUIContent("Copied - paste into Claude Code"));
             }
-
-            string review = ProfilotEventCapture.ReviewStatusOf(e.eventId);
-            bool marked = review == "reviewed" || review == "not_a_real_issue";
-
-            EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button(new GUIContent("Reviewed", "Mark handled - mutes further notifications for this problem."), GUILayout.Height(20)))
-                Mark(e.eventId, "reviewed");
-            if (GUILayout.Button(new GUIContent("Not an issue", "Mute this problem as noise - no more notifications until reopened."), GUILayout.Height(20)))
-                Mark(e.eventId, "not_a_real_issue");
-            using (new EditorGUI.DisabledScope(!marked))
+            if (GUILayout.Button(new GUIContent("Command", $"Copies just the command:\n{command}"),
+                    GUILayout.Height(22), GUILayout.Width(80)))
             {
-                if (GUILayout.Button(new GUIContent("Reopen", "Return to open and resume notifications."), GUILayout.Height(20), GUILayout.Width(70)))
-                    Mark(e.eventId, "open");
+                EditorGUIUtility.systemCopyBuffer = command;
+                ShowNotification(new GUIContent("Command copied"));
             }
             EditorGUILayout.EndHorizontal();
 
-            if (marked)
+            string review = ProfilotEventCapture.ReviewStatusOf(e.eventId);
+            bool marked = review != "open";
+
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button(new GUIContent("Fixed",
+                    $"Mutes it. If it comes back {ProfilotEventCapture.RegressionMultiple:0}x worse than now, " +
+                    "it alerts again, marked regressed."), GUILayout.Height(20)))
+                Mark(e.eventId, "fixed", t.value);
+            if (GUILayout.Button(new GUIContent("Ignore", "Mutes it for good, as noise. Reopen to bring it back."), GUILayout.Height(20)))
+                Mark(e.eventId, "ignored", t.value);
+            using (new EditorGUI.DisabledScope(!marked))
             {
-                EditorGUILayout.LabelField(
-                    review == "not_a_real_issue" ? "not an issue - muted (Reopen to resume)"
-                                                 : "reviewed - muted (Reopen to resume)",
-                    EditorStyles.miniLabel);
+                if (GUILayout.Button(new GUIContent("Reopen", "Return to open and resume notifications."), GUILayout.Height(20), GUILayout.Width(70)))
+                    Mark(e.eventId, "open", 0);
+            }
+            EditorGUILayout.EndHorizontal();
+
+            switch (review)
+            {
+                case "fixed":
+                    double at = ProfilotEventCapture.FixedValueOf(e.eventId);
+                    EditorGUILayout.LabelField(at > 0
+                            ? $"fixed - muted, alerts again at {at * ProfilotEventCapture.RegressionMultiple:0.##}"
+                            : "fixed - muted, alerts again if it comes back much worse",
+                        EditorStyles.miniLabel);
+                    break;
+                case "ignored":
+                    EditorGUILayout.LabelField("ignored - muted for good (Reopen to resume)", EditorStyles.miniLabel);
+                    break;
+                case "regressed":
+                    prev = GUI.color;
+                    GUI.color = SeverityColor("high");
+                    EditorGUILayout.LabelField("REGRESSED - marked fixed, came back worse", EditorStyles.miniBoldLabel);
+                    GUI.color = prev;
+                    break;
             }
 
             EditorGUILayout.EndVertical();
@@ -415,11 +499,12 @@ namespace Profilot.Editor
         private void DrawQuiet()
         {
             EditorGUILayout.Space(6);
+            string state = MonitorState(out Color color, out string detail);
             Color prev = GUI.color;
-            GUI.color = Green;
-            EditorGUILayout.LabelField("● Active - monitoring", EditorStyles.miniBoldLabel);
+            GUI.color = color;
+            EditorGUILayout.LabelField(state, EditorStyles.miniBoldLabel);
             GUI.color = prev;
-            EditorGUILayout.LabelField("No issues caught. Everything is within budget.");
+            EditorGUILayout.LabelField(detail, EditorStyles.wordWrappedMiniLabel);
         }
 
         private void DrawOnboarding()
@@ -433,9 +518,9 @@ namespace Profilot.Editor
                 EditorApplication.isPlaying = true;
         }
 
-        private void Mark(string eventId, string status)
+        private void Mark(string eventId, string status, double value)
         {
-            ProfilotEventCapture.MarkReviewed(eventId, status);
+            ProfilotEventCapture.MarkReviewed(eventId, status, value);
             Repaint();
         }
 

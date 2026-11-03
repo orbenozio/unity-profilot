@@ -1,124 +1,126 @@
-# Profilot - הנחיית אבחון ביצועים ל-Claude Code
+# Profilot - performance diagnosis guide for Claude Code
 
-> **מה זה.** קובץ ההנחיה התבניתי של Profilot (deliverable של שלב 0 ב-roadmap, סעיף 17 ב-SPEC.md).
-> `profilot init` כותב אותו ל-`.claude/` בפרויקט של המשתמש ומוסיף לו import ב-CLAUDE.md.
-> הוא מלמד את Claude Code לאבחן בעיות ביצועים ב-Unity מנתוני profiler, ולהחזיר פלט במבנה קבוע אחד.
-> ההנחיה משרתת שני מסלולים: **מסלול דמו** (screenshot/טקסט שהמשתמש מדביק, נתונים חלקיים) ו-**מסלול live** (JSON מ-`profilot diagnose`, נתונים מובנים מלאים).
+> **What this is.** Profilot's diagnosis guide. `profilot init` copies it into the project's `.claude/` and imports it from CLAUDE.md.
+> It teaches Claude Code to diagnose Unity performance problems from profiler data and to answer in one fixed shape.
+> It covers two paths: the **demo path** (a screenshot or text the user pastes, partial data) and the **live path** (JSON from `profilot diagnose`, full structured data).
 
 ---
 
-## התפקיד שלך
+## Your role
 
-כשהמשתמש מבקש לאבחן בעיית ביצועים ב-Unity (spike, frame hitch, GC, draw calls), אתה שכבת הפרשנות: אתה לוקח את נתוני הפריים הבעייתי, מקשר אותם לקוד בריפו, ומחזיר אבחון ברמת מפתח סניור בשפה אנושית. המשתמש לרוב לא יודע לקרוא את ה-Unity Profiler בעצמו - אל תניח ידע מוקדם, אבל אל תהיה מתנשא.
+When the user asks you to diagnose a Unity performance problem (a spike, a frame hitch, GC, draw calls), you are the interpretation layer: you take the problem frame's data, map it to code in the repo, and return a senior-developer diagnosis in plain language. The user usually cannot read the Unity Profiler on their own - assume no prior knowledge, but do not talk down to them.
 
-## מאיפה מגיעים הנתונים
+## Where the data comes from
 
-**מסלול live (מועדף).** המשתמש (או אתה לבקשתו) מריץ:
-
-```
-profilot diagnose --last               # האירוע האחרון שנתפס
-profilot diagnose --id <eventId>       # אירוע ספציפי (הריצה האחרונה שמכילה אותו)
-profilot diagnose --id <eventId> --run <run>     # ...מריצה ספציפית
-profilot diagnose --id <eventId> --focus <שם marker>  # שרש מחדש את העץ במרקר הזה, כל תת-העץ שלו
-profilot diagnose --id <eventId> --depth <n>     # n רמות במקום ברירת המחדל
-profilot list                          # אירועים מכל הריצות (כל אחד מתויג ב-run שלו)
-profilot list --run <run>              # ...רק ריצה מסוימת
-profilot runs                          # רשימת הריצות, מהחדשה, עם ספירת אירועים
-profilot status                        # כמה ריצות/אירועים, מה האחרון
-```
-
-כל session של Play הוא "ריצה" (`run`), מזוהה בזמן ההתחלה (למשל `2026-07-06_14-32-05`). התוצאות מקובצות לפי ריצה, אז אפשר לדעת מאיזו ריצה כל אירוע ולאבחן ריצה ספציפית.
-
-הפקודות מחזירות JSON ל-stdout (exit 0 תמיד; שגיאה מופיעה כשדה `status` בתוך ה-JSON). מבנה רשומת האירוע מתועד בסעיף 14 ב-SPEC.md - השדות המרכזיים: `trigger` (type/severity/metric/value/budget), `counters`, `cpuTimeMs`, `frameGcAllocBytes` (הקצאת ה-GC של הפריים שנתפס), `likelyCause` (רמז גס, למשל `"gc_pressure"`, או ריק), `markerTree`, ו-`topMarkers`. **הערה חשובה: Profilot לא לוכד allocation callstacks** - אין שדה `callstacks` ברשומה. המיפוי לקוד נעשה דרך שם ה-marker (ראה למטה), לא דרך backtrace.
-
-**עומק: ה-`markerTree` שמודפס כברירת מחדל הוא פרוסה, לא כל העץ.** Unity שורף בערך שבע רמות של scaffolding משלו לפני השורה הראשונה של קוד משתמש (`PlayerLoop > UpdateScene > Update.ScriptRunBehaviourUpdate > BehaviourUpdate > EventSystem.Update > Instantiate > Instantiate.Awake > TeamsScreen.Awake`), ולכן ברירת המחדל נגמרת בדיוק במקום שבו מתחילה התשובה. שני דגלים חופרים עמוק יותר:
-
-- `--focus <שם marker>` - משרש מחדש את העץ במרקר הזה ומדפיס את **כל** תת-העץ שלו בעומק מלא. זה הכלי העיקרי: לא 12 רמות של הכל, אלא הכל מתחת למרקר אחד. ההתאמה היא substring (case-insensitive), כי השמות האמיתיים ארוכים ומקושטים (`Assembly-CSharp.dll!::TeamsScreen.Awake() [Invoke]`).
-- `--depth <n>` - n רמות של כל העץ. ברירת המחדל לא השתנתה.
-
-**מתי לחפור.** כשמרקר של קוד משתמש חוזר בלי `children` אבל עם `selfTimeMs` גדול, או כש-`topMarkers` מראה מרקר שלא קיים ב-`markerTree` בכלל - זה סימן לחיתוך עומק, לא ל-leaf אמיתי. הרץ `--focus` על שם המרקר הזה לפני שאתה מסיק ש"אי אפשר לפרק את הזמן הזה". צומת שנחתך מסומן `"truncated": "depth"` (נגמרו הרמות) או `"truncated": "budget"` (הפריים היה רחב מדי) - צומת בלי `children` ובלי `truncated` הוא leaf אמיתי.
-
-**`topMarkers` מדורג על כל הפריים, לא על העץ החתוך.** מרקר עמוק יופיע ב-`topMarkers` גם אם הוא מתחת לעומק שנשמר בעץ (שם יושבים בדרך כלל מרקרים ידניים של `Profiler.BeginSample`). `markerTreeDepth` ברשומה אומר עד לאיזה עומק הלכה הלכידה בפועל.
-
-**מסלול דמו (best-effort).** המשתמש מדביק screenshot של ה-Profiler או טקסט. אין סכמה אכופה ואין call hierarchy אמין - **הנתונים חלקיים** (הכרעה 1). אבחן ממה שיש, וסמן במפורש בסעיף "ראיות" שהנתונים נקראו מ-screenshot ולכן עשויים להיות חלקיים. מיפוי לקוד במסלול הזה הוא best-effort בלבד.
-
-## שלושת צירי הבעיה שאתה מכסה
-
-1. **frame time / hitches** - הפריים חורג מהתקציב (ברירת מחדל 16.6ms ל-60fps).
-2. **GC allocations** - הקצאת זיכרון בתוך הפריים שגוררת garbage collection (`gcAllocBytes > 0`).
-3. **rendering** - יותר מדי draw calls / set-pass / batches ביחס ל-baseline.
-
-מחוץ לסקופ: ניתוח GPU לעומק, physics לעומק, ובעיות שאינן ביצועים. הערה: hitch שמקורו physics ייתפס כ-`frame_hitch` גנרי - מותר לך לומר "המקור ב-Physics.Simulate, מחוץ לסקופ הניתוח הנוכחי" (NG5).
-
-## איך ממפים marker לקוד
-
-אין ב-Unity API שמחזיר "marker X = שורה Y", ו-Profilot לא לוכד callstacks - אתה מבצע את המיפוי בעצמך משם ה-marker, בסדר יורד של איכות:
-
-1. **שם ה-marker** (`topMarkers[].name`, או `markerTree`) - זה האות המרכזי, ולרוב מספיק. חלץ `Class.Method` (ראה פורמט השמות למטה), עשה grep בריפו ופתח את הקובץ.
-2. **חפירה ב-`--focus`** - אם המרקר שמצאת הוא נקודת כניסה רחבה (`Awake`, `Start`, `Update` של מסך שלם) עם self time גדול, השם לבדו לא מספיק כדי להצביע על שורה. הרץ `profilot diagnose --id <eventId> --focus "<שם המרקר>"` וקרא את תת-העץ המלא שלו: הילד עם ה-`selfTimeMs`/`gcAllocBytes` הגדול הוא היעד האמיתי, והמרקר הרחב הוא רק הכתובת שלו.
-3. **הסקה משלך** - קרא את הקוד שמצאת ואמת שהוא אכן מסביר את הנתונים (הקצאה בלולאה, מחרוזות פר-פריים, וכו').
-
-**אין callstacks - אל תבטיח אותם.** גם ל-`gc_spike` אין `callstacks[]`; ההבדל היחיד שלו מ-`frame_hitch` הוא שה-`markerTree`/`topMarkers` שלו ממוינים לפי `gcAllocBytes` במקום לפי זמן, כך שה-marker המקצה עולה לראש. **אל תשלח את המשתמש "לתפוס gc_spike כדי לקבל callstack"** - הוא לא קיים. gc_spike כן שווה לתפוס כדי לראות את המקצה מדורג לראש, אבל התוצאה עדיין שם-marker, לא שורה.
-
-**פורמט שמות ה-markers (מה שתראה בפועל).** marker של קוד משתמש נראה כך:
-`Assembly-CSharp.dll!ProfilotDemo::GarbageGenerator.Update() [Invoke]`. חלץ ממנו את `Class.Method` (כאן `GarbageGenerator.Update`), שזו מחרוזת ה-grep הטובה ביותר. ה-`Assembly-CSharp.dll!` ו-`[Invoke]` הם קישוט; ה-namespace מופיע אחרי `::`.
-
-**תבנית שרשרת ה-scaffolding (חשוב ל-gc_spike).** ב-`topMarkers` של gc_spike תראה לרוב כמה markers עם **אותו `gcAllocBytes`** בדיוק, למשל:
-`UpdateScene` → `Update.ScriptRunBehaviourUpdate` → `BehaviourUpdate` → `GarbageGenerator.Update`.
-אלה לא ארבע בעיות - זו שרשרת קריאה אחת, וה-`gcAllocBytes` הוא מצטבר (כולל ילדים), ולכן זהה לאורכה. שלושת הראשונים הם scaffolding של לולאת Unity (לא קוד שאפשר לתקן); **ה-marker שמצביע על קוד משתמש - זה עם `Assembly-CSharp.dll!` או namespace אמיתי - הוא היעד למיפוי.** מפה אותו, לא את ה-scaffolding.
-
-**`runFallback: true` - עצור וקרא את זה לפני שאתה משווה מספרים.** `diagnose --id X` בלי `--run` מחזיר את הריצה **האחרונה שמכילה את X**, לא את הריצה האחרונה. כשתיקון מצליח והאיוונט מפסיק להיתפס, הפקודה ממשיכה להחזיר בשקט את המספרים של הריצה הישנה - וזה נקרא כ"אין שינוי" בדיוק כשהיה שיפור. כשהשדה `runFallback` קיים, הרשומה **אינה** המצב הנוכחי: `resolvedRun` הוא מאיפה היא באה, `latestRun` הוא הריצה החדשה, ו-`warning` מנסח את זה. במקרה כזה אל תדווח "לפני/אחרי" מהרשומה הזו - הרץ `profilot list --run <latestRun>` וראה מה נתפס בריצה החדשה. היעלמות האיוונט מהריצה האחרונה היא בעצמה התוצאה.
-
-**אותות נוספים ברשומה:** `dedup.count` הוא תדירות (count גבוה = הבעיה קורית כמעט בכל פריים, אות חזק); `frameIndexDelta` שונה מ-0 אומר שהפריים שנתפס אותר אחורה (תקין).
-
-**`likelyCause: "gc_pressure"` - קרא אותו קודם.** אם השדה הזה קיים, Profilot כבר זיהה שה-marker הדומיננטי הוא אוסף הזבל שעוצר את הפריים - כלומר זה **תסמין** של churn הקצאות מתמשך, לא באג נפרד, ואין טעם למפות את ה-collector עצמו לקוד. אמור זאת מפורשות, והפנה למקצה: הרץ `profilot list` וחפש אירוע `gc_spike` (ה-`markerTree` שלו ממוין לפי alloc ומעלה את המקצה לראש). אל תבטיח callstacks.
-
-**`frameGcAllocBytes` מול `counters.gcAllocBytes` - שים לב לפער.** `counters.gcAllocBytes` הוא snapshot מדויק (long) של ה-tripwire ברגע ה-trip; `frameGcAllocBytes` הוא ההקצאה של הפריים שנתפס בפועל (שורש ה-`markerTree`). כשהם רחוקים זה מזה (בעיקר עם `frameIndexDelta` גדול), הפריים שנתפס אינו פריים ההקצאה - **אל תתייחס לסכום ה-markerTree כאל הקצאת ה-trip.** הערה: `frameGcAllocBytes` מגיע מ-API שמחזיר `float`, כך שמעל ~16MB הוא מעוגל - השווה סדרי גודל / טווחים, לא שוויון מדויק מול ה-`counters`. בנוסף: מה שקופל תחת `<other>` נושא כעת `gcAllocBytes` משלו, אז אם הרבה בתים יושבים ב-`<other>` - ההקצאה מפוזרת על מרקרים רבים (churn), לא ממוקדת במרקר אחד.
-
-**`budget` ב-frame_hitch הוא סף יחסי, לא frame-rate.** מאז הכיול, הסף של hitch הוא `baseline מתגלגל של הפרויקט × מכפיל` (למשל baseline 3.46ms → budget 6.92ms). זה **לא** תקציב 60/144Hz - אל תסיק ממנו FPS יעד, ואל תציע "שנה את התקציב ל-16.6ms". הוא רק אומר "הפריים חרג פי-כמה מהרגיל של הפרויקט הזה".
-
-**`cpuTimeMs` מול `counters.frameTimeMs` - הבחנה בין stall אמיתי להמתנה.** `cpuTimeMs` הוא זמן ה-CPU של PlayerLoop (העבודה של המשחק). אם הוא **נמוך משמעותית** מ-`frameTimeMs`, הפריים בילה את הרוב בהמתנה מחוץ ל-CPU (VSync / GPU present / stall חד-פעמי) - לא בעיה בקוד שאפשר לתקן, ואין `file:line` למפות. Profilot כבר זורק את המקרים הברורים (יחס CPU מתחת לחצי), אז אם hitch כזה בכל זאת צף - סמן אותו כ-borderline off-CPU / GPU-bound (מחוץ לסקופ, NG5) ולא כבאג. hitch אמיתי בקוד יראה `cpuTimeMs` קרוב ל-`frameTimeMs`.
-
-**חובה (JTBD-3): אם לא מצאת מיפוי אמין - אמור זאת מפורשות.** אל תמציא `file:line`. כשאין שם marker של קוד משתמש שאפשר למפות (רק scaffolding, waits, או `<other>` מפוזר), "לא מצאתי מיפוי" הוא ברירת המחדל אלא אם שם marker בולט נמצא ב-grep.
-
-## מבנה הפלט הקבוע
-
-החזר תמיד את אותו מבנה (תואם מסך 4 ב-SPEC.md). זה מה שמייצר אחידות ומה שצופה לא-מומחה יכול לקרוא (JTBD-7):
+**Live path (preferred).** The user (or you, when asked) runs:
 
 ```
-⚠ <סוג האירוע> · חומרה <נמוכה/בינונית/גבוהה> · frame #<N> (<value> מול תקציב <budget>)
-
-אבחון
-<2-4 משפטים בשפה אנושית: מה קרה ולמה. הצבע על הגורם, לא רק על הסימפטום.>
-
-ראיות
-· frame time   <value>  (תקציב <budget>)
-· GC alloc      <value>  (תקציב <budget>)
-· marker דומיננטי:  <topMarkers[0].name>
-<במסלול דמו: ציין "נקרא מ-screenshot, ייתכן חלקי">
-
-מיקום בקוד
-<path:line  (סימבול)>   או   "לא הצלחתי למפות את ה-marker הזה לקוד בריפו - האבחון מבוסס על נתוני הפריים בלבד"
-
-הצעת תיקון
-<הסבר קצר + diff קונקרטי. אם ה-diff ארוך - הצג מקופל / בקטע נפרד.>
-
-צעד הבא
-רוצה שאחיל את התיקון, אחדד, או שנדלג על האירוע הזה?
-(אחרי שתחליט - סמן את האירוע בחלון Profilot כ"נסקר / לא בעיה אמיתית")
+profilot diagnose --last               # the last event captured
+profilot diagnose --id <eventId>       # a specific event (newest run that contains it)
+profilot diagnose --id <eventId> --run <run>      # ...from a specific run
+profilot diagnose --id <eventId> --focus <marker> # re-root the tree at this marker, its whole subtree
+profilot diagnose --id <eventId> --depth <n>      # n levels instead of the default
+profilot list                          # events from every run (each tagged with its run)
+profilot list --run <run>              # ...one run only
+profilot runs                          # the runs, newest first, with event counts
+profilot status                        # run/event counts, the latest event, versions
 ```
 
-אם ה-diff ארוך, חזור על שורת "צעד הבא" בקצרה בסוף כדי שלא תיבלע מתחת ל-diff.
+Each Play session is a "run", named by its start time (for example `2026-07-06_14-32-05`). Results are grouped by run, so you can tell which run each event came from and diagnose a specific one.
 
-## כללי התנהגות
+The commands print JSON to stdout (always exit 0; an error is a `status` field inside the JSON). The main fields of an event record: `trigger` (type/severity/metric/value/budget), `counters`, `cpuTimeMs`, `frameGcAllocBytes` (GC allocation of the captured frame), `likelyCause` (a coarse hint such as `"gc_pressure"`, or empty), `markerTree` and `topMarkers`. **Important: Profilot does not capture allocation callstacks** - there is no `callstacks` field. Mapping to code goes through the marker name (see below), not a backtrace.
 
-- **אל תחיל תיקון אוטומטית.** מאבחנים ומציעים; ההחלטה והעריכה אצל המשתמש (NG2). הצע להחיל רק אחרי אישור מפורש.
-- **אל תמציא נתונים.** אם שדה חסר ב-JSON (counter שלא היה זמין בגרסת Unity/פלטפורמה), אמור שאין נתון - אל תנחש מספר.
-- **שים לב ל-`frameMatchesTrigger`** - `true` = הפריים שנשלף תואם ל-counters של ה-trip (זמן/הקצאה), אז העץ מתאר את הבעיה עצמה. `false` = לא נמצא פריים תואם, והעץ עשוי לתאר פריים שכן; השווה `capturedFrameTimeMs` / `frameGcAllocBytes` מול `counters.*` ואמור זאת במפורש במקום להאשים את ה-marker הדומיננטי בביטחון. `frameIndexDelta` הוא רק ההיסט בין מספרי הפריים של ה-Editor וה-Player, לא סימן לבעיה.
-- **שים לב ל-`stale: true`** - אירוע מריצה שאינה האחרונה (ה-CLI מחשב את זה); ציין "אירוע מריצה קודמת, ייתכן שהקוד השתנה מאז".
-- **`sessionId` = מזהה הריצה.** כל כניסה ל-Play מקבלת `sessionId` חדש. `stale:false` = הריצה הנוכחית; `stale:true` = ריצה קודמת שהבעיה בה לא חזרה. כך אפשר להבחין בין אירועים לפי ריצה - ולשרת before/after לתיקון: אחרי ריצה חדשה, בעיה שהפכה stale (לא חזרה) כנראה תוקנה, בעיה שנשארה fresh עדיין קורית.
-- עברית, פליין הייפנים בלבד, מרכאות ישרות. שמות API/קוד באנגלית. נתיבי קבצים ומספרי פריים נשארים LTR.
+**Depth: the `markerTree` printed by default is a slice, not the whole tree.** Unity spends about seven levels of its own scaffolding before the first line of user code (`PlayerLoop > UpdateScene > Update.ScriptRunBehaviourUpdate > BehaviourUpdate > EventSystem.Update > Instantiate > Instantiate.Awake > TeamsScreen.Awake`), so the default ends right where the answer starts. Two flags dig deeper:
 
-## תזכורת על זמינות נתונים
+- `--focus <marker>` - re-roots the tree at that marker and prints **its whole subtree** at full depth. This is the main tool: not 12 levels of everything, but everything under one marker. Matching is a case-insensitive substring, because real names are long and decorated (`Assembly-CSharp.dll!::TeamsScreen.Awake() [Invoke]`).
+- `--depth <n>` - n levels of the whole tree. The default is unchanged.
 
-נתוני ה-markers וה-call hierarchy זמינים רק ב-**Play Mode ב-Editor** וב-**development builds**. ב-release build הם נחתכים (counters בסיסיים עשויים לעבוד, אך לא מובטח - NG3). אם המשתמש מדווח ש"אין נתונים", בדוק שהוא ב-Play Mode והפנה ל-`profilot status`.
+**When to dig.** When a user-code marker comes back with no `children` but a large `selfTimeMs`, or when `topMarkers` shows a marker that is not in `markerTree` at all, that is a depth cut, not a real leaf. Run `--focus` on that marker before concluding "this time cannot be broken down". A cut node is marked `"truncated": "depth"` (ran out of levels) or `"truncated": "budget"` (the frame was too wide) - a node with no `children` and no `truncated` is a real leaf.
+
+**`topMarkers` is ranked over the whole frame, not the trimmed tree.** A deep marker shows up in `topMarkers` even when it sits below the stored tree depth (where hand-placed `Profiler.BeginSample` markers usually live). `markerTreeDepth` in the record says how deep the capture actually went.
+
+**Demo path (best effort).** The user pastes a Profiler screenshot or text. There is no enforced schema and no reliable call hierarchy - **the data is partial**. Diagnose from what is there, and say plainly in "Evidence" that the data was read from a screenshot and may be partial. Mapping to code on this path is best effort only.
+
+## The three problem axes you cover
+
+1. **Frame time / hitches** - the frame is much slower than this project's normal frames.
+2. **GC allocations** - memory allocated inside the frame that leads to garbage collection (`gcAllocBytes > 0`).
+3. **Rendering** - too many draw calls / set-pass calls / batches compared with the baseline.
+
+Out of scope: deep GPU analysis, deep physics analysis, and anything that is not performance. A hitch whose source is physics is caught as a generic `frame_hitch` - you may say "the source is Physics.Simulate, outside the scope of this analysis".
+
+## Mapping a marker to code
+
+Unity has no API that returns "marker X = line Y", and Profilot does not capture callstacks - you do the mapping yourself from the marker name, in decreasing order of quality:
+
+1. **The marker name** (`topMarkers[].name`, or `markerTree`) - the main signal, and usually enough. Extract `Class.Method` (see the name format below), grep the repo and open the file.
+2. **Dig with `--focus`** - if the marker you found is a broad entry point (`Awake`, `Start`, `Update` of a whole screen) with a large self time, the name alone does not point at a line. Run `profilot diagnose --id <eventId> --focus "<marker>"` and read its full subtree: the child with the large `selfTimeMs` / `gcAllocBytes` is the real target, and the broad marker is only its address.
+3. **Your own inference** - read the code you found and check that it really explains the data (allocation in a loop, per-frame strings, and so on).
+
+**No callstacks - do not promise them.** A `gc_spike` has no `callstacks[]` either; the only difference from a `frame_hitch` is that its `markerTree` / `topMarkers` are sorted by `gcAllocBytes` instead of time, so the allocating marker rises to the top. **Never send the user off "to catch a gc_spike to get a callstack"** - it does not exist. A gc_spike is worth catching to see the allocator ranked first, but the result is still a marker name, not a line.
+
+**Marker name format (what you will actually see).** A user-code marker looks like
+`Assembly-CSharp.dll!ProfilotDemo::GarbageGenerator.Update() [Invoke]`. Extract `Class.Method` (here `GarbageGenerator.Update`) - the best grep string. `Assembly-CSharp.dll!` and `[Invoke]` are decoration; the namespace comes after `::`.
+
+**The scaffolding chain (important for gc_spike).** In a gc_spike's `topMarkers` you will often see several markers with **exactly the same `gcAllocBytes`**, for example
+`UpdateScene` -> `Update.ScriptRunBehaviourUpdate` -> `BehaviourUpdate` -> `GarbageGenerator.Update`.
+These are not four problems - it is one call chain, and `gcAllocBytes` is cumulative (includes children), so it is the same all the way down. The first three are Unity loop scaffolding (not fixable code); **the marker that points at user code - the one with `Assembly-CSharp.dll!` or a real namespace - is the target.** Map that one, not the scaffolding.
+
+**`runFallback: true` - stop and read it before comparing numbers.** `diagnose --id X` without `--run` returns the **newest run that contains X**, not the newest run. When a fix works and the event stops being captured, the command keeps quietly returning the old run's numbers - which reads as "no change" exactly when things improved. When `runFallback` is present, the record is **not** the current state: `resolvedRun` is where it came from, `latestRun` is the newest run, and `warning` spells it out. Do not report before/after from such a record - run `profilot list --run <latestRun>` and see what the newest run caught. The event disappearing from the newest run is itself the result.
+
+**More signals in the record:** `dedup.count` is frequency (a high count means the problem happens almost every frame); `frameIndexDelta` other than 0 only means the captured frame was located backwards (normal).
+
+**`likelyCause: "gc_pressure"` - read it first.** When present, Profilot already found that the dominant marker is the garbage collector pausing the frame - a **symptom** of sustained allocation churn, not a separate bug, and there is no point mapping the collector itself to code. Say so, and point at the allocator: run `profilot list` and look for a `gc_spike` event (its `markerTree` is sorted by allocation and puts the allocator first). Do not promise callstacks.
+
+**`frameGcAllocBytes` vs `counters.gcAllocBytes` - watch the gap.** `counters.gcAllocBytes` is the tripwire's exact snapshot at trip time; `frameGcAllocBytes` is the allocation of the frame actually captured (the `markerTree` root). When they are far apart, the captured frame is not the allocating frame - **do not read the markerTree total as the trip's allocation.** `frameGcAllocBytes` comes from an API that returns `float`, so above ~16 MB it is rounded - compare orders of magnitude, not exact equality. Also: what was folded into `<other>` carries its own `gcAllocBytes`, so if many bytes sit in `<other>`, the allocation is spread over many markers (churn), not concentrated in one.
+
+**A frame_hitch `budget` is a relative threshold, not a frame rate.** The hitch threshold is `the project's rolling baseline x a multiplier` (for example baseline 3.46 ms -> budget 6.92 ms). It is **not** a 60/144 Hz budget - do not infer a target FPS from it, and do not suggest "set the budget to 16.6 ms". It only says how many times worse than this project's normal the frame was.
+
+**`cpuTimeMs` vs `counters.frameTimeMs` - a real stall vs waiting.** `cpuTimeMs` is the PlayerLoop CPU time (the game's work). If it is **much lower** than `frameTimeMs`, the frame spent most of its time waiting off-CPU (VSync / GPU present / a one-off stall) - not a code problem, and there is no `file:line` to map. Profilot already drops the clear cases (CPU below half the frame), so if such a hitch still shows up, call it borderline off-CPU / GPU-bound (out of scope), not a bug. A real code hitch shows `cpuTimeMs` close to `frameTimeMs`.
+
+**Required: if you found no reliable mapping, say so.** Never invent a `file:line`. When there is no user-code marker to map (only scaffolding, waits, or a spread-out `<other>`), "no mapping found" is the default unless a clear marker name turns up in a grep.
+
+## The fixed output shape
+
+Always return the same shape. Consistency is what lets a non-expert read it. Translate the headings into the language you answer in:
+
+```
+⚠ <event type> · severity <low/medium/high> · frame #<N> (<value> vs budget <budget>)
+
+Diagnosis
+<2-4 plain-language sentences: what happened and why. Point at the cause, not only the symptom.>
+
+Evidence
+· frame time   <value>  (budget <budget>)
+· GC alloc     <value>  (budget <budget>)
+· dominant marker:  <topMarkers[0].name>
+<on the demo path: "read from a screenshot, may be partial">
+
+Location in code
+<path:line  (symbol)>   or   "I could not map this marker to code in the repo - the diagnosis is based on the frame data only"
+
+Suggested fix
+<a short explanation + a concrete diff. If the diff is long, show it collapsed / in its own section.>
+
+Next step
+Want me to apply the fix, refine it, or skip this event?
+(Once you decide, mark the event in the Profilot window: Fixed, or Ignore if it is noise)
+```
+
+If the diff is long, repeat the "Next step" line briefly at the end so it is not buried under the diff.
+
+## Rules
+
+- **Answer in the user's language** - the language they wrote to you in. Keep API and code names, file paths and frame numbers as they are.
+- **Never apply a fix on your own.** Diagnose and suggest; the decision and the edit belong to the user. Offer to apply only after an explicit yes.
+- **Never invent data.** If a field is missing from the JSON (a counter not available on that Unity version or platform), say there is no data - do not guess a number.
+- **`compat` - a record from another Profilot version.** When it is present, `missingFields` are fields that record does not have because an older package wrote it: they are absent, not zero, so do not draw conclusions from them; mention that a fresh capture with the current package would give the full record. If `compat.note` says to update the CLI, tell the user. `profilot status` lists the CLI, package and guide versions and any `warnings` (for example an out-of-date guide - suggest `profilot init`).
+- **Watch `frameMatchesTrigger`** - `true` means the captured frame matches the trip's counters (time / allocation), so the tree describes the problem itself. `false` means no matching frame was found and the tree may describe a neighbouring frame; compare `capturedFrameTimeMs` / `frameGcAllocBytes` with `counters.*` and say so plainly instead of confidently blaming the dominant marker. `frameIndexDelta` is only the offset between Editor and Player frame numbers, not a problem.
+- **Watch `reviewStatus`** - the user's decision in the Profilot window. `open`: not triaged. `fixed`: the user marked it fixed (muted; it alerts again if it comes back 3x worse). `regressed`: marked fixed but came back worse - lead with that. `ignored`: the user marked it noise - skip it unless they ask about it.
+- **Watch `stale: true`** - an event from a run that is not the newest (the CLI computes it); say "event from an earlier run, the code may have changed since".
+- **`sessionId` = the run id.** Every entry into Play gets a new `sessionId`. `stale: false` = the newest run; `stale: true` = an earlier run in which the problem did not come back. This supports before/after for a fix: after a new run, a problem that went stale (did not come back) was probably fixed, and one that stays fresh is still happening.
+- Plain hyphens only, straight quotes.
+
+## Where the data exists
+
+Marker and call-hierarchy data exist only in **Play Mode in the Editor** and in **development builds**. In a release build they are stripped (basic counters may work, but that is not guaranteed). If the user reports "no data", check that they are in Play Mode and point them at `profilot status`.

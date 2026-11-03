@@ -75,6 +75,11 @@ namespace Profilot.PlayTests
             Assert.IsTrue(record.Contains("\"status\":\"ok\""), "the gc_spike record has no profiler frame");
             Assert.IsFalse(record.Contains("\"frameIndex\":-1"), "the gc_spike record has no profiler frame");
             Assert.IsTrue(record.Contains("\"frameMatchesTrigger\":true"), "the captured frame does not match the trip");
+            Assert.IsTrue(record.Contains("\"schemaVersion\":\"2\""), "the record does not carry the current schema version");
+            Assert.IsFalse(record.Contains("\"writerVersion\":\"unknown\""), "the record does not say which package wrote it");
+
+            string meta = Path.Combine(Directory.GetCurrentDirectory(), "Library", "Profilot", "meta.json");
+            Assert.IsTrue(File.Exists(meta), "meta.json was not written on entering Play");
         }
     }
 }

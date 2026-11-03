@@ -26,14 +26,18 @@ profilot diagnose --id <eventId> --depth <n>            # print n levels instead
 profilot list                            # event summaries across all runs (each tagged with its run)
 profilot list --run <run>                # ...only that run
 profilot runs                            # the runs, newest first, with event counts
-profilot status                          # store present? run count, event count, latest
+profilot status                          # store present? run/event counts, latest, versions
 profilot --version                       # the CLI version
 ```
 
 Each Play Mode session is a "run", identified by its start time (e.g. `2026-07-06_14-32-05`).
 Results are grouped by run, so you can tell which run an event came from and diagnose a specific
-one. Review decisions (`reviewed` / `not_a_real_issue`) are overlaid from `reviews.json` and
-apply across runs.
+one. Review decisions (`open` / `fixed` / `regressed` / `ignored`) are overlaid from
+`reviews.json` and apply across runs.
+
+`status` also reports `versions` (CLI, Unity package, schema, and whether the project's guide copy
+is current) plus `warnings` when they drift. A record written by an older package comes back with
+a `compat` block listing the fields it lacks.
 
 Every command exits 0; failures are reported as a `status` field in the JSON
 (`ok` / `no_data` / `error`), so an agent can branch on the payload, not the exit code.

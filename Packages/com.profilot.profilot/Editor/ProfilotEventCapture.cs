@@ -19,7 +19,26 @@ namespace Profilot.Editor
     [InitializeOnLoad]
     internal static class ProfilotEventCapture
     {
-        private const string SchemaVersion = "1";
+        // Bump whenever the record's fields change, so the CLI can tell an older record (missing
+        // fields) from a newer one it does not know yet. 2 = frameGcAllocBytes, likelyCause,
+        // markerTreeDepth, capturedFrameTimeMs, frameMatchesTrigger, writerVersion.
+        internal const string SchemaVersion = "2";
+
+        // The package version that wrote a record (writerVersion), read once from the package
+        // manifest. "unknown" when the package is not resolved through the Package Manager.
+        private static string _writerVersion;
+        internal static string WriterVersion
+        {
+            get
+            {
+                if (_writerVersion == null)
+                {
+                    var info = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(ProfilotEventCapture).Assembly);
+                    _writerVersion = info != null && !string.IsNullOrEmpty(info.version) ? info.version : "unknown";
+                }
+                return _writerVersion;
+            }
+        }
 
         // A frame_hitch whose PlayerLoop CPU work explains less than this fraction of the
         // frame time was spent waiting (VSync / GPU present / idle), not doing fixable CPU
@@ -55,19 +74,32 @@ namespace Profilot.Editor
 
         private static readonly Dictionary<string, Accumulator> Dedup = new Dictionary<string, Accumulator>();
 
-        // reviewStatus set by the user from the window. Remembered so that an ongoing spike
-        // of the same problem does not reset it back to "open" when the record is overwritten.
-        private static readonly Dictionary<string, string> Reviewed = new Dictionary<string, string>();
+        // Review decisions set by the user from the window, keyed by eventId across runs:
+        //   "fixed"     - muted, but remembers the trigger value it was marked at. If the problem
+        //                 comes back RegressionFactor times worse it turns "regressed" and alerts.
+        //   "ignored"   - muted for good (noise), until the user reopens it.
+        //   "regressed" - a fixed problem that came back worse; alerts like an open one.
+        // Remembered so that an ongoing spike of the same problem does not reset it back to
+        // "open" when the record is overwritten.
+        private sealed class Review
+        {
+            public string Status;
+            public double Value;
+        }
 
-        /// <summary>Called by the window when the user marks an event (SPEC.md JTBD-8).</summary>
-        internal static void MarkReviewed(string eventId, string status)
+        private const double RegressionFactor = 3.0;
+        private static readonly Dictionary<string, Review> Reviewed = new Dictionary<string, Review>();
+
+        /// <summary>Called by the window when the user marks an event (SPEC.md JTBD-8). `value`
+        /// is the event's trigger value, the reference a "fixed" mark measures a comeback against.</summary>
+        internal static void MarkReviewed(string eventId, string status, double value = 0)
         {
             // "open" is the absence of a decision (Reopen) - drop it from the persisted map so
             // notifications resume; any other status is remembered across sessions.
             if (status == "open")
                 Reviewed.Remove(eventId);
             else
-                Reviewed[eventId] = status;
+                Reviewed[eventId] = new Review { Status = status, Value = value };
 
             SaveReviews();
         }
@@ -79,7 +111,7 @@ namespace Profilot.Editor
             LoadReviews();
         }
 
-        [System.Serializable] private class ReviewRecord { public string id; public string status; }
+        [System.Serializable] private class ReviewRecord { public string id; public string status; public double value; }
         [System.Serializable] private class ReviewFile { public List<ReviewRecord> items = new List<ReviewRecord>(); }
 
         private static void LoadReviews()
@@ -94,34 +126,78 @@ namespace Profilot.Editor
                 if (f?.items != null)
                     foreach (ReviewRecord it in f.items)
                         if (!string.IsNullOrEmpty(it.id) && !string.IsNullOrEmpty(it.status))
-                            Reviewed[it.id] = it.status;
+                            Reviewed[it.id] = new Review { Status = MigrateStatus(it.status), Value = it.value };
             }
             catch { /* a corrupt reviews file should never break capture */ }
+        }
+
+        // Before 0.7 the two buttons were "reviewed" and "not_a_real_issue", and both muted
+        // forever. They map onto the new pair; an old "reviewed" has no value, so its first
+        // comeback sets the reference instead of alerting.
+        private static string MigrateStatus(string status)
+        {
+            switch (status)
+            {
+                case "reviewed": return "fixed";
+                case "not_a_real_issue": return "ignored";
+                default: return status;
+            }
         }
 
         private static void SaveReviews()
         {
             var f = new ReviewFile();
             foreach (var kv in Reviewed)
-                f.items.Add(new ReviewRecord { id = kv.Key, status = kv.Value });
+                f.items.Add(new ReviewRecord { id = kv.Key, status = kv.Value.Status, value = kv.Value.Value });
             try { ProfilotEventStore.WriteReviews(JsonUtility.ToJson(f)); }
             catch { /* best effort */ }
         }
 
-        // A problem the user has given feedback on (reviewed or not-an-issue) is muted: no more
-        // notifications until they Reopen it. Notifications are only for open, un-triaged
-        // problems.
+        // Fixed and ignored problems are muted: no more notifications until they regress or the
+        // user reopens them. Notifications are only for open, regressed or un-triaged problems.
         private static bool IsMuted(string eventId)
         {
-            return Reviewed.TryGetValue(eventId, out string s) && s != "open";
+            return Reviewed.TryGetValue(eventId, out Review r) && (r.Status == "fixed" || r.Status == "ignored");
+        }
+
+        /// <summary>A "fixed" problem caught again at RegressionFactor times the value it was marked
+        /// at turns "regressed" (persisted). Returns true on that transition only.</summary>
+        private static bool CheckRegression(string eventId, double value)
+        {
+            if (!Reviewed.TryGetValue(eventId, out Review r) || r.Status != "fixed")
+                return false;
+
+            if (r.Value <= 0)
+            {
+                // Migrated mark with no reference value: this comeback becomes the reference.
+                r.Value = value;
+                SaveReviews();
+                return false;
+            }
+
+            if (value < r.Value * RegressionFactor)
+                return false;
+
+            r.Status = "regressed";
+            SaveReviews();
+            return true;
         }
 
         /// <summary>Live review status for an event (from the persisted, cross-run decision map),
         /// so the window reflects a mark instantly on every run's copy.</summary>
         internal static string ReviewStatusOf(string eventId)
         {
-            return Reviewed.TryGetValue(eventId, out string s) ? s : "open";
+            return Reviewed.TryGetValue(eventId, out Review r) ? r.Status : "open";
         }
+
+        /// <summary>The trigger value a "fixed" mark was made at (0 when unknown or not fixed).</summary>
+        internal static double FixedValueOf(string eventId)
+        {
+            return Reviewed.TryGetValue(eventId, out Review r) && r.Status == "fixed" ? r.Value : 0;
+        }
+
+        /// <summary>How many times worse a fixed problem has to come back to alert again.</summary>
+        internal static double RegressionMultiple => RegressionFactor;
 
         private const string DeepCaptureKey = "Profilot.DeepCapture";
 
@@ -185,6 +261,11 @@ namespace Profilot.Editor
             // it must avoid ':' (illegal in a Windows path).
             _sessionId = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
             ProfilotEventStore.CurrentRun = _sessionId;
+
+            // Which package and schema write this store, so `profilot status` can tell the user
+            // when the CLI, the package and the project's guide have drifted apart.
+            try { ProfilotEventStore.WriteMeta(BuildMeta()); }
+            catch { /* best effort - capture does not depend on it */ }
 
             // Age-based retention: drop run folders older than the configured cap (if enabled),
             // so results from long-gone runs do not pile up.
@@ -319,6 +400,9 @@ namespace Profilot.Editor
             }
             acc.Count += signal.RepeatCount + 1;
 
+            // Before the record is built, so it already carries "regressed".
+            bool regressed = CheckRegression(eventId, signal.Value);
+
             string likelyCause = LikelyCause(dominantMarker);
 
             string json;
@@ -338,9 +422,10 @@ namespace Profilot.Editor
 
             // Proactive, cheap alert - only the first time a distinct problem is caught this
             // session (repeats already fold into the dedup count), never per frame, no LLM, and
-            // never for a problem the user has muted via Reviewed / Not-an-issue.
-            if (isNewProblem && !IsMuted(eventId))
-                ProfilotNotifier.OnProblemCaught(eventId, signal.Type, dominantMarker, acc.Count);
+            // never for a problem the user has muted via Fixed / Ignore. A fixed problem that came
+            // back worse alerts once more, on the transition.
+            if (regressed || (isNewProblem && !IsMuted(eventId)))
+                ProfilotNotifier.OnProblemCaught(eventId, signal.Type, dominantMarker, acc.Count, regressed);
         }
 
         /// <summary>
@@ -467,11 +552,12 @@ namespace Profilot.Editor
             float capturedFrameMs, float frameGcBytes, bool frameMatches, string likelyCause, Accumulator acc)
         {
             string severity = Severity(signal.Value, signal.Budget);
-            string review = Reviewed.TryGetValue(eventId, out string r) ? r : "open";
+            string review = ReviewStatusOf(eventId);
 
             var sb = new StringBuilder(1024);
             sb.Append('{');
             sb.Append("\"schemaVersion\":").Append(Json.Str(SchemaVersion));
+            sb.Append(",\"writerVersion\":").Append(Json.Str(WriterVersion));
             sb.Append(",\"eventId\":").Append(Json.Str(eventId));
             sb.Append(",\"status\":").Append(Json.Str(status));
             sb.Append(",\"reviewStatus\":").Append(Json.Str(review));
@@ -551,6 +637,18 @@ namespace Profilot.Editor
             sb.Append(",\"run\":").Append(Json.Str(_sessionId));
             sb.Append(",\"file\":").Append(Json.Str(eventId + ".json"));
             sb.Append(",\"capturedAt\":").Append(Json.Str(DateTime.UtcNow.ToString("o")));
+            sb.Append('}');
+            return sb.ToString();
+        }
+
+        private static string BuildMeta()
+        {
+            var sb = new StringBuilder(160);
+            sb.Append('{');
+            sb.Append("\"schemaVersion\":").Append(Json.Str(SchemaVersion));
+            sb.Append(",\"packageVersion\":").Append(Json.Str(WriterVersion));
+            sb.Append(",\"unityVersion\":").Append(Json.Str(Application.unityVersion));
+            sb.Append(",\"writtenAt\":").Append(Json.Str(DateTime.UtcNow.ToString("o")));
             sb.Append('}');
             return sb.ToString();
         }

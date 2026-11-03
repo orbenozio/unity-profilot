@@ -6,6 +6,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-03
+
+Fixes the remaining blocking items B-5 to B-9 from the 2026-11-03 team review. The CLI and the
+package now release together, with the same version number.
+
+### Changed
+- Review buttons are now **Fixed** and **Ignore** (were Reviewed / Not an issue, which both muted
+  forever). Fixed remembers the value it was marked at; if the problem comes back 3x worse it turns
+  `regressed`, alerts once, and shows a badge. Ignore is the permanent mute. Muted events sit in a
+  collapsed "Muted (N)" group and each card says its state. Old decisions migrate on load
+  (`reviewed` -> `fixed`, `not_a_real_issue` -> `ignored`).
+- The card's main button is now "Copy prompt for Claude", a ready prompt for that event; "Command"
+  copies just the command. Both always pin `--run`, so picking an older run no longer diagnoses
+  the newest run's record.
+- The window states what the tripwire is really doing: not playing, warming up (frame N/60),
+  watching (with the baseline), or not running (with a reason). It used to say "monitoring" during
+  the warm-up and whenever Play was on.
+- The diagnosis guide that `profilot init` installs is in English and tells Claude to answer in
+  the user's language (it was Hebrew and made every answer Hebrew).
+
+### Added
+- Records are `schemaVersion` 2 and carry `writerVersion`. The CLI adds a `compat` block to a
+  record from another schema (the fields an older one lacks, or "update the CLI" for a newer one).
+- The package writes `Library/Profilot/meta.json` on every Play. `profilot status` reports the CLI,
+  package and schema versions and whether the project's guide copy is current, with `warnings`
+  when they drift ("run `profilot init`").
+
 ## [0.6.0] - 2026-11-03
 
 Fixes the blocking items B-1 to B-4 from the 2026-11-03 team review. Each was reproduced on a

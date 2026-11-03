@@ -9,7 +9,8 @@ namespace Profilot.Editor
     /// Library/Profilot/runs/&lt;runId&gt;/evt_*.json, so results can be distinguished, navigated,
     /// and deleted by run. A top-level latest.json points at the most recent event, and
     /// reviews.json (top-level, keyed by eventId - a decision is about the problem, not the run)
-    /// holds the user's review decisions. Lives under Library/ so it stays out of the Assets
+    /// holds the user's review decisions, and meta.json says which package version writes the
+    /// store. Lives under Library/ so it stays out of the Assets
     /// and version control.
     /// </summary>
     internal static class ProfilotEventStore
@@ -18,6 +19,7 @@ namespace Profilot.Editor
         public static string RunsRoot => Path.Combine(Base, "runs");
         public static string LatestPath => Path.Combine(Base, "latest.json");
         public static string ReviewsPath => Path.Combine(Base, "reviews.json");
+        public static string MetaPath => Path.Combine(Base, "meta.json");
 
         // The run currently being written; set by the capture service on play start.
         public static string CurrentRun = "session";
@@ -123,6 +125,13 @@ namespace Profilot.Editor
         {
             Directory.CreateDirectory(Base);
             WriteAtomic(ReviewsPath, json);
+        }
+
+        // Which package version and schema write this store (read by `profilot status`).
+        public static void WriteMeta(string json)
+        {
+            Directory.CreateDirectory(Base);
+            WriteAtomic(MetaPath, json);
         }
 
         private static void WriteAtomic(string path, string content)

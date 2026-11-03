@@ -41,7 +41,7 @@ just refreshes the guide):
 - **Unity package** - adds `com.profilot.profilot` to `Packages/manifest.json`, pointing at
   `https://github.com/orbenozio/unity-profilot.git?path=/Packages/com.profilot.profilot#release`.
   `#release` always resolves to the latest release; to pin an exact version, change it to
-  `#v0.5.0`. An existing entry is left as it is. Skip this step with `--no-package`.
+  `#v0.7.0`. An existing entry is left as it is. Skip this step with `--no-package`.
 - **Guidance for Claude Code** - writes
   [`profilot-diagnosis-guide.md`](profilot-diagnosis-guide.md) to `.claude/`, so the agent knows
   when to run the CLI and how to read its output.
@@ -52,6 +52,11 @@ Then open the project in Unity so Package Manager resolves the package. No scene
 tripwire boots itself in Play Mode, and events are written to `Library/Profilot/runs/` inside the
 project. The CLI finds that store by walking up from the working directory, or set
 `PROFILOT_PROJECT` to the project root.
+
+**Keep the two halves together.** The Unity package and the CLI ship with the same version
+number, and records carry a `schemaVersion`. After upgrading either one, upgrade the other
+(`npm install -g profilot`, and Package Manager > Profilot > Update) and re-run `profilot init` to
+refresh the guide. `profilot status` prints all three versions and warns when they drift apart.
 
 Working on Profilot itself? Use `cd cli && npm link` instead of the npm install, so the command
 runs from your clone.
@@ -104,8 +109,9 @@ See [`SPEC.md`](SPEC.md) section 17. Current state:
 - Phase 1 - live tripwire (`ProfilerRecorder`). Done.
 - Phase 2 - full-frame capture, event store, and the Node CLI. Done, verified live.
 - Phase 3 - calibration (marker-tree trimming, noise filtering, cross-store dedup). In progress.
-- Editor window (`Tools/Profilot/Window`) - live states, caught-issue list, copy-diagnose, and
-  Reviewed / Not-an-issue feedback.
+- Editor window (`Tools/Profilot/Window`) - live states (not playing / warming up / watching /
+  not running), caught-issue list, copy a prompt for Claude, and Fixed / Ignore feedback (a fixed
+  problem that comes back 3x worse alerts again as regressed; muted ones sit in a "Muted" group).
 
 ## Requirements
 

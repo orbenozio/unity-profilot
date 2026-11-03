@@ -22,9 +22,9 @@ namespace Profilot.Editor
         public static bool WindowFlash { get => EditorPrefs.GetBool(Prefix + "WindowFlash", true); set => EditorPrefs.SetBool(Prefix + "WindowFlash", value); }
         public static bool Sound { get => EditorPrefs.GetBool(Prefix + "Sound", false); set => EditorPrefs.SetBool(Prefix + "Sound", value); }
 
-        public static void OnProblemCaught(string eventId, string type, string marker, int count)
+        public static void OnProblemCaught(string eventId, string type, string marker, int count, bool regressed = false)
         {
-            string headline = $"{type} · {CleanMarker(marker)} ×{count}";
+            string headline = $"{(regressed ? "regressed " : string.Empty)}{type} · {CleanMarker(marker)} ×{count}";
 
             if (Console) TryConsole(headline, eventId);
             if (Toast) TryToast(headline);

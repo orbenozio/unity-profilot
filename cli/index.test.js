@@ -163,12 +163,30 @@ test('reviews.json overlays reviewStatus in list and diagnose', () => {
   const p = makeProject([sampleEvent('evt_a_gc_spike', 'gc_spike', '2026-06-25T10:00:00Z')]);
   fs.writeFileSync(
     path.join(baseDir(p), 'reviews.json'),
-    JSON.stringify({ items: [{ id: 'evt_a_gc_spike', status: 'not_a_real_issue' }] }),
+    JSON.stringify({ items: [{ id: 'evt_a_gc_spike', status: 'regressed', value: 1000 }] }),
   );
   const l = run(p, ['list']);
-  assert.equal(l.events[0].reviewStatus, 'not_a_real_issue');
+  assert.equal(l.events[0].reviewStatus, 'regressed');
   const d = run(p, ['diagnose', '--id', 'evt_a_gc_spike']);
-  assert.equal(d.reviewStatus, 'not_a_real_issue');
+  assert.equal(d.reviewStatus, 'regressed');
+});
+
+test('reviews.json: pre-0.7 statuses read as the new pair', () => {
+  const p = makeProject([
+    sampleEvent('evt_a_gc_spike', 'gc_spike', '2026-06-25T10:00:00Z'),
+    sampleEvent('evt_b_gc_spike', 'gc_spike', '2026-06-25T10:00:01Z'),
+  ]);
+  fs.writeFileSync(
+    path.join(baseDir(p), 'reviews.json'),
+    JSON.stringify({
+      items: [
+        { id: 'evt_a_gc_spike', status: 'reviewed' },
+        { id: 'evt_b_gc_spike', status: 'not_a_real_issue' },
+      ],
+    }),
+  );
+  const byId = Object.fromEntries(run(p, ['list']).events.map((e) => [e.eventId, e.reviewStatus]));
+  assert.deepEqual(byId, { evt_a_gc_spike: 'fixed', evt_b_gc_spike: 'ignored' });
 });
 
 test('unknown command returns error status', () => {
@@ -505,4 +523,61 @@ test('stale: an event pinned with --run to an older run is still stale', () => {
   ]);
   assert.equal(run(p, ['diagnose', '--id', 'evt_a', '--run', '2026-06-25_10-00-00']).stale, true);
   assert.equal(run(p, ['diagnose', '--id', 'evt_a']).stale, false);
+});
+
+// --- B-5: schema and version compatibility -----------------------------------------------------
+
+test('compat: an older record lists the fields it lacks', () => {
+  const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
+  const d = run(p, ['diagnose', '--id', 'evt_a']);
+  assert.equal(d.compat.schemaVersion, 1);
+  assert.equal(d.compat.cliSchemaVersion, 2);
+  assert.ok(d.compat.missingFields.includes('frameMatchesTrigger'));
+  assert.ok(d.compat.missingFields.includes('markerTreeDepth'));
+});
+
+test('compat: nothing added for a current record', () => {
+  const e = {
+    ...sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z'),
+    schemaVersion: '2',
+    writerVersion: '0.7.0',
+  };
+  const p = makeProject([e]);
+  assert.equal(run(p, ['diagnose', '--last']).compat, undefined);
+});
+
+test('compat: a newer record says to update the CLI', () => {
+  const e = { ...sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z'), schemaVersion: '9' };
+  const p = makeProject([e]);
+  assert.match(run(p, ['diagnose', '--last']).compat.note, /npm install -g profilot/);
+});
+
+test('status: versions of the CLI, the package and the guide copy', () => {
+  const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
+  fs.writeFileSync(path.join(baseDir(p), 'meta.json'), JSON.stringify({ schemaVersion: '2', packageVersion: '0.7.0' }));
+
+  let s = run(p, ['status']);
+  assert.equal(s.versions.cli, require('./package.json').version);
+  assert.equal(s.versions.package, '0.7.0');
+  assert.deepEqual(s.versions.schema, { cli: 2, package: 2 });
+  assert.equal(s.versions.guide, 'missing');
+  assert.ok(s.warnings.some((w) => w.includes('profilot init')));
+
+  fs.mkdirSync(path.join(p, '.claude'));
+  fs.writeFileSync(path.join(p, '.claude', 'profilot-diagnosis-guide.md'), 'an old guide\n');
+  assert.equal(run(p, ['status']).versions.guide, 'outdated');
+
+  // The same copy the CLI ships: next to index.js after prepack, else the repo root.
+  const packed = path.join(__dirname, 'profilot-diagnosis-guide.md');
+  const shipped = fs.existsSync(packed) ? packed : path.join(__dirname, '..', 'profilot-diagnosis-guide.md');
+  fs.copyFileSync(shipped, path.join(p, '.claude', 'profilot-diagnosis-guide.md'));
+  s = run(p, ['status']);
+  assert.equal(s.versions.guide, 'current');
+  assert.equal(s.warnings, undefined);
+});
+
+test('status: an older package is flagged', () => {
+  const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
+  fs.writeFileSync(path.join(baseDir(p), 'meta.json'), JSON.stringify({ schemaVersion: '1', packageVersion: '0.5.1' }));
+  assert.ok(run(p, ['status']).warnings.some((w) => w.includes('Unity package is older')));
 });
