@@ -37,6 +37,10 @@ namespace Profilot
         public long GcAllocBudgetBytes = 0;            // any in-frame allocation is a candidate
         public float DrawCallsBaselineMultiplier = 1.5f;
 
+        // ...and at least this many draw calls above the baseline. Without it a scene that
+        // starts with almost nothing (a baseline of 2) trips on its first few draws.
+        private const double DrawCallsMinIncrease = 50;
+
         // A trigger type emits at most one signal per cooldown window; repeats inside the
         // window are counted and folded into the next signal as dedup.count (SPEC.md
         // section 15 rate-limit / dedup). Without it the Editor's constant baseline
@@ -150,12 +154,16 @@ namespace Profilot
             // projects and frame-rate targets without a fixed budget.
             double hitchThreshold = _frameMsBaseline * FrameHitchMultiplier;
 
-            // First match wins; a full multi-event model per frame comes later.
+            // Each type is checked on its own, never as an else-if chain: with the default
+            // GC budget of 0 almost every Editor frame allocates, so a chain let gc_spike win
+            // every frame and draw_calls could never fire. Each type has its own cooldown, and
+            // the capture dedups by type + marker, so one bad frame tripping two types is fine.
             if (_mainThreadTime.Valid && _frameBaselineWarm && _frameMs > hitchThreshold && _frameMs > FrameHitchFloorMs)
                 OnTrip(TripKind.FrameHitch, _frameMs, hitchThreshold);
-            else if (_gcAllocated.Valid && _gcBytes > GcAllocBudgetBytes)
+            if (_gcAllocated.Valid && _gcBytes > GcAllocBudgetBytes)
                 OnTrip(TripKind.GcSpike, _gcBytes, GcAllocBudgetBytes);
-            else if (_baselineWarm && _drawCalls.Valid && _draws > _drawCallsBaseline * DrawCallsBaselineMultiplier)
+            if (_baselineWarm && _drawCalls.Valid && _draws > _drawCallsBaseline * DrawCallsBaselineMultiplier &&
+                _draws - _drawCallsBaseline >= DrawCallsMinIncrease)
                 OnTrip(TripKind.DrawCalls, _draws, _drawCallsBaseline * DrawCallsBaselineMultiplier);
         }
 

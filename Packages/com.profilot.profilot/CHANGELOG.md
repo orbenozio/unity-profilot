@@ -6,6 +6,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-03
+
+Fixes the blocking items B-1 to B-4 from the 2026-11-03 team review. Each was reproduced on a
+fresh Unity 6000.3 project against v0.5.1 and verified fixed there.
+
+### Fixed
+- CLI: output piped to another process was cut at 64 KB on macOS/Linux (broken JSON, exit 0),
+  because the CLI exited before stdout drained. This hit `--focus` and `--depth` the hardest.
+- Capture picked the wrong frame. It took the largest frame in the search window instead of the
+  one that tripped, so a 14 ms / 1.2 MB trip could come back with the tree of a neighbouring
+  480 ms / 121 MB load frame - wrong marker, wrong event id, wrong dedup key. It now picks the
+  frame whose counters are closest to the trip's.
+- Capture also ran before the Profiler had delivered the tripping frame, so a single stall was
+  captured as a neighbouring idle frame. A trip now waits up to 10 Editor updates for a
+  matching frame, scanning only the frames that arrived since its last look.
+- `draw_calls` never fired: the triggers were an else-if chain and, with the default GC budget
+  of 0, `gc_spike` won almost every Editor frame. Each trigger is now checked on its own. A
+  draw-call spike also has to be at least 50 draws above the baseline, so a near-empty scene
+  does not trip on its first few draws.
+- `stale` was always `false`. The CLI now computes it at read time: `true` for a record from a
+  run that is not the newest.
+
+### Added
+- Event records carry `capturedFrameTimeMs` and `frameMatchesTrigger`, so the diagnosis can tell
+  when the captured frame does not look like the trip. The diagnosis guide explains both.
+
 ## [0.5.1] - 2026-11-03
 
 ### Fixed

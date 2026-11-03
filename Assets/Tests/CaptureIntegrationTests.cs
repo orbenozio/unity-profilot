@@ -57,17 +57,24 @@ namespace Profilot.PlayTests
             string[] files = Directory.GetFiles(RunsDir, "evt_*.json", SearchOption.AllDirectories);
             Assert.IsNotEmpty(files, "no events were captured after allocating every frame");
 
-            bool gcSpike = false;
+            // A file existing is not enough: v0.5.1 shipped with every record frameless
+            // (frameIndex -1, no markers) and this test still passed. The allocator's gc_spike
+            // must come from a real profiler frame and name the allocator.
+            string record = null;
             foreach (string file in files)
             {
-                if (File.ReadAllText(file).Contains("\"type\":\"gc_spike\""))
+                string json = File.ReadAllText(file);
+                if (json.Contains("\"type\":\"gc_spike\"") && json.Contains("Allocator.Update"))
                 {
-                    gcSpike = true;
+                    record = json;
                     break;
                 }
             }
 
-            Assert.IsTrue(gcSpike, "expected a gc_spike event from per-frame allocation");
+            Assert.IsNotNull(record, "expected a gc_spike event mapped to Allocator.Update");
+            Assert.IsTrue(record.Contains("\"status\":\"ok\""), "the gc_spike record has no profiler frame");
+            Assert.IsFalse(record.Contains("\"frameIndex\":-1"), "the gc_spike record has no profiler frame");
+            Assert.IsTrue(record.Contains("\"frameMatchesTrigger\":true"), "the captured frame does not match the trip");
         }
     }
 }

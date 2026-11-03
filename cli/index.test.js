@@ -461,3 +461,48 @@ test('--version prints the CLI version', () => {
   const r = run(os.tmpdir(), ['--version']);
   assert.equal(r.version, require('./package.json').version);
 });
+
+// --- B-1: big payloads survive a pipe -----------------------------------------------------------
+
+test('diagnose: a payload over 200 KB arrives whole through a pipe', () => {
+  const e = sampleEvent('evt_big', 'gc_spike', '2026-06-25T10:00:00Z');
+  e.markerTree.children = [];
+  for (let i = 0; i < 3000; i++) {
+    e.markerTree.children.push({ name: `Marker${i}_${'x'.repeat(60)}`, selfTimeMs: 1, totalTimeMs: 1, gcAllocBytes: 0, calls: 1 });
+  }
+  const p = makeProject([e]);
+  // execFileSync reads the child's stdout through a pipe - the case that was cut at 64 KB on
+  // macOS/Linux when the CLI called process.exit() right after writing.
+  const out = execFileSync('node', [CLI, 'diagnose', '--last', '--depth', '1'], {
+    env: { ...process.env, PROFILOT_PROJECT: p },
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  assert.ok(out.length > 200 * 1024, `payload was only ${out.length} bytes`);
+  const r = JSON.parse(out);
+  assert.equal(r.markerTree.children.length, 3000);
+});
+
+// --- B-4: stale is computed from the runs -------------------------------------------------------
+
+test('stale: false in the newest run, true in an older one (list and diagnose)', () => {
+  const p = makeProject([
+    sampleEvent('evt_old', 'gc_spike', '2026-06-25T10:00:00Z', 'open', '2026-06-25_10-00-00'),
+    sampleEvent('evt_new', 'gc_spike', '2026-06-26T10:00:00Z', 'open', '2026-06-26_10-00-00'),
+  ]);
+  const byId = Object.fromEntries(run(p, ['list']).events.map((e) => [e.eventId, e]));
+  assert.equal(byId.evt_new.stale, false);
+  assert.equal(byId.evt_old.stale, true);
+  assert.equal(run(p, ['diagnose', '--id', 'evt_old']).stale, true);
+  assert.equal(run(p, ['diagnose', '--id', 'evt_new']).stale, false);
+  assert.equal(run(p, ['diagnose', '--last']).stale, false);
+});
+
+test('stale: an event pinned with --run to an older run is still stale', () => {
+  const p = makeProject([
+    sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z', 'open', '2026-06-25_10-00-00'),
+    sampleEvent('evt_a', 'gc_spike', '2026-06-26T10:00:00Z', 'open', '2026-06-26_10-00-00'),
+  ]);
+  assert.equal(run(p, ['diagnose', '--id', 'evt_a', '--run', '2026-06-25_10-00-00']).stale, true);
+  assert.equal(run(p, ['diagnose', '--id', 'evt_a']).stale, false);
+});

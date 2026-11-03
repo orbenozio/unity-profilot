@@ -76,6 +76,36 @@ not to find magic absolute numbers.
 - [ ] Note: a HEAVY per-frame allocator surfaces as the GC-pause `frame_hitch` (mapped to the
       allocator), not a `gc_spike`. Product-correct, but worth documenting for users.
 
+## Team review 2026-11-03 (Noa / Maya / Ariel / Roni)
+
+IDs refer to the consolidated review doc (B = blocking, S = should-fix, N = nit). The doc itself
+is not in the repo (it quotes a private project's data).
+
+### Done
+- [x] B-1 CLI output cut at 64 KB through a pipe (exit before stdout drained) - v0.6.0
+- [x] B-2 capture picked the largest frame, not the tripping one; plus it ran before the
+      Profiler delivered that frame - closest-frame match + wait up to 10 updates - v0.6.0
+- [x] B-3 `draw_calls` never fired (else-if chain) - independent checks + a 50-draw floor - v0.6.0
+- [x] B-4 `stale` always false - computed by the CLI per run - v0.6.0
+- [x] `CaptureIntegrationTests` now asserts a real frame, the allocator's marker and
+      `frameMatchesTrigger`, not just "a file exists"
+- Verified with an E2E harness on a fresh 6000.3 project (plain leak, small leak next to 4 MB
+  frames, a 60 ms stall, a 300-cube draw-call spike): v0.5.1 fails 3 of 4, v0.6.0 passes all,
+  each event mapped to its method with `frameMatchesTrigger: true`. Host suite 3/3.
+
+### Todo (blocking, needs decisions)
+- [ ] B-5 schema / version compatibility between the CLI, the package and the guide
+- [ ] B-6 review buttons mute forever with no muted list (decide D-5)
+- [ ] B-7 Copy diagnose command loses the selected run
+- [ ] B-8 window says "monitoring" during warm-up / when not running
+- [ ] B-9 English diagnosis guide (depends on open question 1, audience)
+
+### Todo (should-fix seen during the B-2/B-3 work)
+- [ ] S-5 `PostLateUpdate.*` still ranks as a culprit (`evt_gc_spike_PostLateUpdate.BatchModeUpdate`)
+- [ ] A draw-call event is named after the frame's CPU marker (e.g. `GarbageCollector...`),
+      which says nothing about what drew - attribute draw calls to renderers, not markers
+- [ ] S-15 capture cost: each scan still builds a hierarchy view per frame
+
 ## Release phase (packaging and distribution - the "operational" gap)
 
 ### Done

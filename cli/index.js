@@ -78,11 +78,19 @@ function reviewMap(base) {
   return map;
 }
 
-function summarize(rec, run, reviews) {
+// "stale" = the record is from a run that is not the newest one. The Unity side cannot know
+// this when it writes (it always wrote false), so the CLI decides it at read time.
+function withStale(rec, run, latestRun) {
+  if (rec && typeof rec === 'object') rec.stale = !!latestRun && run !== latestRun;
+  return rec;
+}
+
+function summarize(rec, run, reviews, latestRun) {
   const trigger = rec.trigger || {};
   return {
     eventId: rec.eventId,
     run,
+    stale: !!latestRun && run !== latestRun,
     type: trigger.type,
     severity: trigger.severity,
     capturedAt: rec.capturedAt,
@@ -281,12 +289,13 @@ function cmdRuns(base) {
 function cmdList(base, runFilter) {
   if (!base) return cmdStatus(base);
   const reviews = reviewMap(base);
-  const runs = runFilter ? [runFilter] : listRuns(base);
+  const allRuns = listRuns(base);
+  const runs = runFilter ? [runFilter] : allRuns;
   const events = [];
   for (const r of runs) {
     for (const f of runEventFiles(base, r)) {
       try {
-        events.push(summarize(readJson(path.join(runsRoot(base), r, f)), r, reviews));
+        events.push(summarize(readJson(path.join(runsRoot(base), r, f)), r, reviews, allRuns[0]));
       } catch (_) {
         // skip a half-written or malformed file rather than failing the whole listing
       }
@@ -313,10 +322,11 @@ function cmdDiagnoseLast(base, opts) {
     return { status: 'error', message: `Event file missing for ${pointer.eventId}.` };
   }
   try {
-    const rec = withReview(readJson(file), reviewMap(base));
+    const runs = listRuns(base);
+    const rec = withStale(withReview(readJson(file), reviewMap(base)), pointer.run, runs[0]);
     // latest.json is the last event WRITTEN, which can predate the newest run entirely - a run
     // that captured nothing leaves the pointer on the previous one. Same trap as --id.
-    return shapeTree(runFallback(rec, pointer.run, listRuns(base)), opts);
+    return shapeTree(runFallback(rec, pointer.run, runs), opts);
   } catch (e) {
     return { status: 'error', message: `Event ${pointer.eventId} is unreadable: ${e.message}` };
   }
@@ -333,7 +343,7 @@ function cmdDiagnoseId(base, id, runFilter, opts) {
     const file = path.join(runsRoot(base), r, name);
     if (fs.existsSync(file)) {
       try {
-        const rec = withReview(readJson(file), reviewMap(base));
+        const rec = withStale(withReview(readJson(file), reviewMap(base)), r, allRuns[0]);
         // Only warn on an IMPLICIT fallback. With --run the caller chose the run, so an older
         // one is the answer they asked for, not a surprise.
         return shapeTree(runFilter ? rec : runFallback(rec, r, allRuns), opts);
@@ -480,7 +490,7 @@ function main() {
   const command = argv[0];
   if (command === '--version' || command === 'version') {
     print({ status: 'ok', version: require('./package.json').version });
-    process.exit(0);
+    return;
   }
   const base = findBase();
   const runFlag = getFlag(argv, '--run');
@@ -519,7 +529,9 @@ function main() {
   }
 
   print(result);
-  process.exit(0);
+  // Not process.exit(): on macOS/Linux a piped stdout is async, and exiting right after the write
+  // cut every payload over 64 KB mid-JSON (exit 0, unparseable output). Let the write drain.
+  process.exitCode = 0;
 }
 
 main();

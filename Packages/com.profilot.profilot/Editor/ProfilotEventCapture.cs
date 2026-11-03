@@ -198,10 +198,29 @@ namespace Profilot.Editor
             ArmRecording(DeepCapture);
 
             ProfilotTripChannel.Clear();
+            PendingCaptures.Clear();
             Dedup.Clear();
             // Reviewed is NOT cleared - review decisions persist across sessions (loaded from
             // disk in the static ctor, saved on every change), so a muted problem stays muted.
         }
+
+        // A trip waiting for its profiler frame. The Profiler hands frames to the Editor with a
+        // lag, so on the update right after a trip the tripping frame is often not there yet - a
+        // single 60 ms stall was captured as a neighbouring 2 ms frame. Each pending trip scans
+        // the frames that arrived since its last look, keeps the closest one, and is written as
+        // soon as a frame matches, or after MaxCaptureWaitUpdates with the closest it saw.
+        private sealed class PendingCapture
+        {
+            public TripSignal Signal;
+            public int Updates;
+            public int ScannedTo = -1;
+            public int Best = -1;
+            public double BestDistance = double.PositiveInfinity;
+            public bool Matched;
+        }
+
+        private const int MaxCaptureWaitUpdates = 10;
+        private static readonly List<PendingCapture> PendingCaptures = new List<PendingCapture>();
 
         private static void OnUpdate()
         {
@@ -209,22 +228,36 @@ namespace Profilot.Editor
                 return;
 
             Buffer.Clear();
-            if (ProfilotTripChannel.Drain(Buffer) == 0)
+            ProfilotTripChannel.Drain(Buffer);
+            foreach (TripSignal signal in Buffer)
+                PendingCaptures.Add(new PendingCapture { Signal = signal });
+
+            if (PendingCaptures.Count == 0)
                 return;
 
-            foreach (TripSignal signal in Buffer)
-                Capture(signal);
+            // Only scan frames when deep capture is armed. Otherwise this is the cheap
+            // counter-only path: no profiler recording, no marker tree, no per-trip cost - just
+            // the counter snapshot the tripwire already sampled.
+            bool deep = Profiler.enabled;
+            for (int i = 0; i < PendingCaptures.Count; i++)
+            {
+                PendingCapture p = PendingCaptures[i];
+                if (deep)
+                {
+                    ScanNewFrames(p);
+                    if (!p.Matched && ++p.Updates < MaxCaptureWaitUpdates)
+                        continue;
+                }
+
+                PendingCaptures.RemoveAt(i--);
+                Capture(p.Signal, deep && p.Best >= 0 ? p.Best : ProfilerDriver.lastFrameIndex, deep && p.Matched);
+            }
         }
 
-        private static void Capture(in TripSignal signal)
+        private static void Capture(in TripSignal signal, int frameIndex, bool frameMatches)
         {
-            // Only do the expensive frame fetch + 30-frame scan when deep capture is armed.
-            // Otherwise this is the cheap counter-only path: no profiler recording, no marker
-            // tree, no per-trip cost - just the counter snapshot the tripwire already sampled.
             bool deep = Profiler.enabled;
-
             int requestedFrameIndex = ProfilerDriver.lastFrameIndex;
-            int frameIndex = deep ? PickBestFrame(signal, requestedFrameIndex) : requestedFrameIndex;
 
             // Fetch + normalize first: the dominant marker is part of the dedup key.
             string markerTreeJson = "null";
@@ -292,7 +325,8 @@ namespace Profilot.Editor
             try
             {
                 json = BuildEventJson(eventId, frameIndex, requestedFrameIndex, signal, status,
-                    markerTreeJson, topMarkersJson, cpuMs, frameGcBytes, likelyCause, acc);
+                    markerTreeJson, topMarkersJson, cpuMs, frameMs, frameGcBytes, deep && frameMatches,
+                    likelyCause, acc);
             }
             catch (Exception e)
             {
@@ -360,24 +394,45 @@ namespace Profilot.Editor
             return string.Empty;
         }
 
-        /// <summary>
-        /// Finds the frame that actually carries the anomaly. Scans recent profiler frames
-        /// and picks the one whose signal is strongest: GC allocation for gc_spike, frame
-        /// time otherwise. This correlates the runtime trip to the right profiler frame
-        /// despite the editor/player frame-index offset, so the offending marker is in the
-        /// captured tree rather than a later idle frame.
-        /// </summary>
-        private static int PickBestFrame(in TripSignal signal, int latest)
+        // A scanned frame whose primary metric is within this relative distance of the trip's
+        // value is taken as the trip's own frame (frameMatchesTrigger in the record).
+        private const double FrameMatchTolerance = 0.5;
+
+        // The tripwire's "GC Allocated In Frame" counter also counts what the Editor itself
+        // allocates around the player loop (~15 KB a frame), which the captured frame's tree does
+        // not include. Differences up to this much are treated as that offset, not a mismatch -
+        // otherwise every small leak looked like a different frame.
+        private const double GcMatchSlackBytes = 64 * 1024;
+
+        // |a - b| beyond `slack`, relative to the larger of the two: 0 = equal, 1 = far apart.
+        private static double RelDistance(double a, double b, double slack = 0.0)
         {
+            double m = Math.Max(Math.Abs(a), Math.Abs(b));
+            return m < 1e-9 ? 0.0 : Math.Max(0.0, Math.Abs(a - b) - slack) / m;
+        }
+
+        /// <summary>
+        /// Looks for the frame that tripped among the profiler frames that arrived since the last
+        /// look (the first look also covers the FrameSearchWindow before it). Keeps the frame
+        /// whose counters are CLOSEST to the trip's snapshot - GC allocation first for gc_spike,
+        /// frame time first otherwise, the other as a tiebreaker. This correlates the runtime trip
+        /// to its profiler frame despite the editor/player frame-index offset. It used to pick the
+        /// LARGEST frame in the window instead, so a 14 ms / 1.2 MB trip came back with the tree
+        /// of a neighbouring 480 ms / 121 MB load frame - wrong marker, wrong event id, wrong
+        /// dedup key.
+        /// </summary>
+        private static void ScanNewFrames(PendingCapture p)
+        {
+            int latest = ProfilerDriver.lastFrameIndex;
             if (latest < 0)
-                return latest;
+                return;
 
-            bool byAlloc = signal.Type == "gc_spike";
             int first = ProfilerDriver.firstFrameIndex;
-            int from = Mathf.Max(first, latest - FrameSearchWindow);
+            int from = p.ScannedTo < 0 ? latest - FrameSearchWindow : p.ScannedTo + 1;
+            from = Mathf.Max(first, from);
+            p.ScannedTo = latest;
 
-            int best = latest;
-            double bestScore = double.NegativeInfinity;
+            bool byAlloc = p.Signal.Type == "gc_spike";
             for (int f = latest; f >= from; f--)
             {
                 HierarchyFrameDataView view = ProfilerDriver.GetHierarchyFrameDataView(
@@ -388,13 +443,16 @@ namespace Profilot.Editor
                     if (view == null || !view.valid)
                         continue;
 
-                    double score = byAlloc
-                        ? view.GetItemColumnDataAsFloat(view.GetRootItemID(), HierarchyFrameDataView.columnGcMemory)
-                        : view.frameTimeMs;
-                    if (score > bestScore)
+                    double gc = view.GetItemColumnDataAsFloat(view.GetRootItemID(), HierarchyFrameDataView.columnGcMemory);
+                    double gcDistance = RelDistance(gc, p.Signal.GcAllocBytes, GcMatchSlackBytes);
+                    double timeDistance = RelDistance(view.frameTimeMs, p.Signal.FrameTimeMs);
+                    double primary = byAlloc ? gcDistance : timeDistance;
+                    double distance = primary + 0.25 * (byAlloc ? timeDistance : gcDistance);
+                    if (distance < p.BestDistance)
                     {
-                        bestScore = score;
-                        best = f;
+                        p.BestDistance = distance;
+                        p.Best = f;
+                        p.Matched = primary <= FrameMatchTolerance;
                     }
                 }
                 finally
@@ -402,13 +460,11 @@ namespace Profilot.Editor
                     view?.Dispose();
                 }
             }
-
-            return best;
         }
 
         private static string BuildEventJson(string eventId, int frameIndex, int requestedFrameIndex,
             in TripSignal signal, string status, string markerTreeJson, string topMarkersJson, float cpuMs,
-            float frameGcBytes, string likelyCause, Accumulator acc)
+            float capturedFrameMs, float frameGcBytes, bool frameMatches, string likelyCause, Accumulator acc)
         {
             string severity = Severity(signal.Value, signal.Budget);
             string review = Reviewed.TryGetValue(eventId, out string r) ? r : "open";
@@ -437,6 +493,12 @@ namespace Profilot.Editor
             // captured frame and the trip frame differ (frameIndexDelta), so the markerTree total
             // must not be read as the trip's allocation.
             sb.Append(",\"frameGcAllocBytes\":").Append(Json.Num(frameGcBytes));
+
+            // The captured frame's own time, and whether the captured frame's counters are close
+            // to the trip's (counters.*). false = no frame in the search window looked like the
+            // trip, so the tree may describe a neighbouring frame - say so instead of blaming it.
+            sb.Append(",\"capturedFrameTimeMs\":").Append(Json.Num(capturedFrameMs));
+            sb.Append(",\"frameMatchesTrigger\":").Append(frameMatches ? "true" : "false");
 
             // Coarse cause hint (may be empty). "gc_pressure" = the frame's dominant marker is the
             // collector pausing the frame, i.e. a symptom of allocation churn - map the allocator
