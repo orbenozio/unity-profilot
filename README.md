@@ -1,121 +1,139 @@
 # Profilot
 
-Copilot for the Unity Profiler - a performance watchdog that sits in the background, catches
-spikes on its own (frame hitches, GC allocations, draw calls) during Play Mode, and hands the
-structured data of the problem frame to Claude Code, which diagnoses the cause, points at the
-responsible code, and proposes a fix.
+A performance watchdog for Unity Play Mode that hands each problem to Claude Code.
 
-This repository is the Unity host project. The product itself is the embedded package at
-[`Packages/com.profilot.profilot`](Packages/com.profilot.profilot).
+Profilot runs quietly while you play in the Editor. When a frame stutters, allocates garbage or
+spikes in draw calls, it captures that frame's profiler data and writes it to a small local store.
+You ask Claude Code to "diagnose the last Profilot event", and it reads the frame, finds the method
+the profiler blames, and proposes a fix. You don't need to know how to read the Unity Profiler.
 
-## Why
+```
+You:    diagnose the last Profilot event
 
-Reading the Unity Profiler and Frame Debugger to understand a spike is a senior-developer skill.
-Profilot turns that rare skill into something any Unity developer can use: it does the catching,
-and Claude Code does the interpreting.
+Claude: frame_hitch - high - frame took 48 ms (this project normally runs at 9 ms)
 
-## How it works (two layers)
+        Diagnosis
+        SyncHitch.Update busy-waits on the main thread every frame once the level starts...
 
-1. A cheap **tripwire** (`ProfilerRecorder`) samples counters every frame and flags anomalies
-   against a budget. Runs for free, no LLM.
-2. On a trip, the **Editor layer** (`ProfilerDriver` + `HierarchyFrameDataView`) captures the
-   full frame and writes a structured event record. A small CLI exposes it to Claude Code, so
-   the LLM is only paid for on real events.
+        Location in code
+        Assets/Game/SyncHitch.cs:21  (SyncHitch.Update)
 
-> Profiler markers are available only in the Editor and in development builds. In release builds
-> they are stripped - this matches the use case (developers develop in the Editor).
+        Suggested fix
+        Move the work off the main thread, or spread it across frames: ...
+```
 
-## Installation
+## Requirements
 
-Requires Unity 6000.3 or newer and Node.js 16 or newer. Two commands, from the Unity project
-folder:
+- Unity 6000.3 or newer. Profilot works in **Editor Play Mode** only; it does not run in player
+  builds.
+- [Claude Code](https://claude.com/claude-code), which reads the events and writes the diagnosis.
+- Node.js 16 or newer, for the `profilot` CLI.
+
+## Quickstart
+
+From the Unity project folder:
 
 ```bash
 npm install -g profilot
 profilot init
 ```
 
-`profilot init` wires the project up in three places, and is safe to re-run (after an upgrade it
-just refreshes the guide):
+`profilot init` sets up three things, and is safe to re-run:
 
-- **Unity package** - adds `com.profilot.profilot` to `Packages/manifest.json`, pointing at
+- **The Unity package.** It adds `com.profilot.profilot` to `Packages/manifest.json`, pointing at
   `https://github.com/orbenozio/unity-profilot.git?path=/Packages/com.profilot.profilot#release`.
-  `#release` always resolves to the latest release; to pin an exact version, change it to
-  `#v0.7.0`. An existing entry is left as it is. Skip this step with `--no-package`.
-- **Guidance for Claude Code** - writes
-  [`profilot-diagnosis-guide.md`](profilot-diagnosis-guide.md) to `.claude/`, so the agent knows
-  when to run the CLI and how to read its output.
-- **CLAUDE.md** - adds an `@.claude/profilot-diagnosis-guide.md` import (creating the file if
-  needed, appending to it otherwise).
+  `#release` follows the latest release; pin one with `#v0.8.0`. An existing entry is left alone,
+  and `--no-package` skips this step.
+- **The guide for Claude Code.** It writes [`profilot-diagnosis-guide.md`](profilot-diagnosis-guide.md)
+  to `.claude/`, which tells Claude Code when to run the CLI and how to read what comes back. If
+  you edited your copy, the old one is kept as a `.bak`.
+- **CLAUDE.md.** It adds an `@.claude/profilot-diagnosis-guide.md` import (and creates the file if
+  there is none).
 
-Then open the project in Unity so Package Manager resolves the package. No scene setup - the
-tripwire boots itself in Play Mode, and events are written to `Library/Profilot/runs/` inside the
-project. The CLI finds that store by walking up from the working directory, or set
-`PROFILOT_PROJECT` to the project root.
+Then open the project in Unity so Package Manager resolves the package. There is no scene setup.
 
-**Keep the two halves together.** The Unity package and the CLI ship with the same version
-number, and records carry a `schemaVersion`. After upgrading either one, upgrade the other
-(`npm install -g profilot`, and Package Manager > Profilot > Update) and re-run `profilot init` to
-refresh the guide. `profilot status` prints all three versions and warns when they drift apart.
+## Using it
 
-Working on Profilot itself? Use `cd cli && npm link` instead of the npm install, so the command
-runs from your clone.
+1. Enter Play Mode and do what makes the game stutter. Profilot warms up for the first 60 frames,
+   then watches against this project's own normal frame time.
+2. When it catches something, you get a Console line and a Game View toast. The Profilot window
+   (`Tools > Profilot > Window`) lists what this run caught.
+3. Ask Claude Code to diagnose it. You can type "diagnose the last Profilot event", or click
+   **Copy prompt for Claude** on an event card and paste it.
+4. Apply the fix, enter Play again and repeat the same steps. If the problem is gone, mark it
+   **Fixed** on its card. If it comes back three times worse than its peak, it alerts again as
+   **regressed**. If it comes back smaller, the card says "seen again after Fixed". **Ignore** is
+   for noise.
 
-## Usage
+Each Play session is a **run**, named by its start time. A run that caught nothing shows as a clean
+run, which is how you can tell a fix worked.
 
-1. Enter Play Mode and reproduce the performance problem.
-2. When the tripwire catches a spike, the editor window (`Tools/Profilot/Window`) shows it, with a
-   button that copies the exact diagnose command.
-3. Ask Claude Code to "diagnose the last event" - it runs the CLI, gets the structured frame, and
-   returns a diagnosis plus a suggested fix.
+## The CLI
 
-CLI commands (read-only, print structured JSON to stdout, no LLM):
-
-```
-profilot diagnose --last          # the most recently captured event (full record)
-profilot diagnose --id <eventId>  # a specific event
-profilot list                     # summaries of the captured events
-profilot status                   # is the store present, how many events, what is latest
-```
-
-Unity spends about seven levels of its own scaffolding before the first line of your code, so the
-marker that actually costs you often sits below the slice `diagnose` prints by default. Two flags
-go deeper without inflating every payload:
+Claude Code runs these for you. They print JSON. `--text` prints readable lines instead, for
+`status`, `runs` and `list`.
 
 ```
-profilot diagnose --id <eventId> --focus "TeamsScreen.Awake"   # re-root at that marker, full subtree
-profilot diagnose --id <eventId> --depth 12                    # more levels of the whole tree
+profilot diagnose                 # the newest open or regressed event (same as --last)
+profilot diagnose --worst         # the costliest open or regressed event of the newest run
+profilot diagnose --id <eventId>  # one event, even if you marked it Fixed or Ignore
+profilot list [--run <run>]       # captured events
+profilot runs                     # runs, newest first ("clean" when nothing was caught)
+profilot status                   # store, versions, warnings
+profilot reference                # how to read every field (Claude Code runs this)
+profilot --help
 ```
 
-`--focus` matches on a substring of the marker name, since real names are long and decorated
-(`Assembly-CSharp.dll!::TeamsScreen.Awake() [Invoke]`). See
-[`cli/README.md`](cli/README.md) for the full behaviour.
+Unity runs about seven levels of its own code before it reaches yours, so the method that costs you
+is often below the part of the tree `diagnose` prints by default. `--focus <marker>` re-roots the
+tree at that marker, and `--depth <n>` prints more levels. See [`cli/README.md`](cli/README.md).
 
-## Repository contents
+## Troubleshooting
+
+- **The window says "not running".** The tripwire is not in this Play session. Exit and re-enter
+  Play; if it stays, reimport the Profilot package.
+- **Events have no markers ("counters only").** Deep capture is off in the window's Capture section.
+  Turn it on to map problems to code.
+- **`profilot status` warns about versions.** The package and the CLI ship together with the same
+  version number. Update the side it names: `npm install -g profilot`, or Package Manager > Profilot
+  > Update. Then re-run `profilot init` to refresh the guide.
+- **`profilot` says "No Profilot store found".** Run it from inside the Unity project, or set
+  `PROFILOT_PROJECT` to the project root. The store only exists after the first Play with the
+  package installed.
+- **Too many events while the scene loads.** Raise "Warm-up (frames)" or the thresholds under
+  Settings in the window.
+
+## How it works
+
+1. A **tripwire** (`ProfilerRecorder`) reads three counters every frame and compares them with the
+   project's own rolling baseline. It costs almost nothing and calls no LLM.
+2. When a counter trips, the **Editor layer** finds that frame in the Profiler
+   (`ProfilerDriver`), captures its marker tree and writes an event record to
+   `Library/Profilot/runs/<run>/`.
+3. The **CLI** prints those records for Claude Code. The LLM only runs when you ask for a diagnosis.
+
+Profilot does not capture allocation call stacks. Claude maps a profiler marker name (for example
+`GarbageGenerator.Update`) to your code by searching the repo.
+
+## Repository
 
 | Path | What |
 |---|---|
-| [`SPEC.md`](SPEC.md) | Full specification (product, UX, architecture), review-gated. |
-| [`SPEC-BRIEF.md`](SPEC-BRIEF.md) | The original brainstorming brief the spec grew from. |
-| [`profilot-diagnosis-guide.md`](profilot-diagnosis-guide.md) | Phase 0 deliverable: the guidance that teaches Claude Code how to diagnose profiler data. |
-| [`Packages/com.profilot.profilot`](Packages/com.profilot.profilot) | The embedded UPM package (the product). |
+| [`Packages/com.profilot.profilot`](Packages/com.profilot.profilot) | The Unity package (the product). |
+| [`cli/`](cli) | The `profilot` npm CLI. |
+| [`profilot-diagnosis-guide.md`](profilot-diagnosis-guide.md) | The guide `profilot init` installs for Claude Code. |
+| [`Assets/`](Assets) | A demo scene and the PlayMode / EditMode tests. |
+| [`SPEC.md`](SPEC.md), [`SPEC-BRIEF.md`](SPEC-BRIEF.md) | The original specification (in Hebrew; some sections are historical). |
+
+Working on Profilot itself? Use `cd cli && npm link` instead of the npm install, so the command runs
+from your clone. Run the tests with `cd cli && npm test`, and in Unity with the Test Runner (EditMode
+and PlayMode).
 
 ## Roadmap
 
-See [`SPEC.md`](SPEC.md) section 17. Current state:
-
-- Phase 0 - diagnosis guidance for Claude Code. Done.
-- Phase 0.5 - `ProfilerDriver` frame-dump spike (validated the editor capture API). Done.
-- Phase 1 - live tripwire (`ProfilerRecorder`). Done.
-- Phase 2 - full-frame capture, event store, and the Node CLI. Done, verified live.
-- Phase 3 - calibration (marker-tree trimming, noise filtering, cross-store dedup). In progress.
-- Editor window (`Tools/Profilot/Window`) - live states (not playing / warming up / watching /
-  not running), caught-issue list, copy a prompt for Claude, and Fixed / Ignore feedback (a fixed
-  problem that comes back 3x worse alerts again as regressed; muted ones sit in a "Muted" group).
-
-## Requirements
-
-- Unity 6000.3 or newer (developed and verified on Unity 6000.3).
+- Calibration: fewer startup events, noise filters for engine markers.
+- Draw-call events named after the rendering marker, not a CPU one.
+- See [`TASKS.md`](TASKS.md) for the open items.
 
 ## License
 

@@ -1,37 +1,21 @@
 # Profilot
 
-Copilot for the Unity Profiler.
+A performance watchdog for Unity Editor Play Mode that hands each problem to Claude Code.
 
-Profilot watches your game in Play Mode, catches performance spikes on its own (frame
-hitches, GC allocations, draw-call jumps), captures the full problem frame, and hands the
-structured data to Claude Code, which diagnoses the cause, points at the responsible code,
-and proposes a fix.
+Profilot watches your game while you play in the Editor, catches frame hitches, GC allocations and
+draw-call spikes against your project's own baseline, captures the problem frame, and writes it to
+`Library/Profilot/runs/`. The `profilot` CLI hands that frame to Claude Code, which maps the
+profiler's marker to your code and suggests a fix.
 
 It is built in two layers so the LLM is never called per frame:
 
-1. A cheap **tripwire** (`ProfilerRecorder`) samples counters every frame and flags
-   anomalies against a budget. Runs for free in the background, no LLM.
-2. On a trip, the **Editor layer** (`ProfilerDriver` + `HierarchyFrameDataView`) pulls the
-   full frame and writes a structured event record that a small CLI exposes to Claude Code.
+1. A cheap **tripwire** (`ProfilerRecorder`) samples three counters every frame and flags
+   anomalies. Runs for free, no LLM.
+2. On a trip, the **Editor layer** (`ProfilerDriver`) finds the frame that tripped, captures its
+   marker tree and writes an event record.
 
-> Profiler markers are available only in the Editor and in development builds. In release
-> builds they are stripped - this matches the use case (you develop in the Editor).
-
-## Status
-
-Working end to end and verified live in Unity 6000.3. See the roadmap in
-[`SPEC.md`](../../SPEC.md) (section 17).
-
-- Phase 0 (done): diagnosis guidance for Claude Code - see
-  [`profilot-diagnosis-guide.md`](../../profilot-diagnosis-guide.md).
-- Phase 0.5 (done): `ProfilerDriver` frame-dump spike that validated the editor capture API.
-  Menu: `Tools/Profilot/Debug/Dump Last Frame To Console`.
-- Phase 1 (done): the live tripwire (`ProfilotTripwire`).
-- Phase 2 (done): full-frame capture on trip, the file-based event store, and the Node CLI.
-- Phase 3 (in progress): calibration - marker-tree trimming, noise filtering, and cross-store
-  dedup by trigger + dominant marker.
-- Editor window (`Tools/Profilot/Window`): live states and the caught-issue list, with a
-  "copy diagnose command" button and Reviewed / Not-an-issue feedback.
+Install and usage: see the [repository README](../../README.md). The window is at
+`Tools > Profilot > Window`.
 
 ## Requirements
 
@@ -46,7 +30,9 @@ Runtime/  ProfilotTripwire.cs        - the live tripwire (ProfilerRecorder)
 Editor/   ProfilotEventCapture.cs    - on trip: fetch frame, normalize, write the event
           MarkerTreeNormalizer.cs    - drill into PlayerLoop, trim the tree, topMarkers
           ProfilotEventStore.cs      - per-run event files under Library/Profilot/runs/<run>
-          ProfilotWindow.cs          - the editor window (runs, settings, review actions)
+          ProfilotWindow.cs          - the editor window (runs, settings, review actions, setup)
+          ProfilotHealth.cs          - is the CLI / guide / CLAUDE.md wired up (Setup panel)
+          ProfilotText.cs            - plain-language labels for cards and notifications
           ProfilotNotifier.cs        - proactive notifications on a new caught problem
           FrameDumpSpike.cs          - the Phase 0.5 ProfilerDriver capture probe
           Json.cs                    - dependency-free JSON emitter

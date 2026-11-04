@@ -35,10 +35,10 @@ not to find magic absolute numbers.
 - [ ] Measure M7 (LLM cost per dev-hour) and set the Q5 threshold (owner decision)
 - [ ] Window accessibility polish (SPEC.md section 11)
 
-### Calibration findings surfaced by dogfooding on a real project (Match Masters)
+### Calibration findings surfaced by dogfooding on a real (private) game project
 - [x] Fixed: the marker tree's fixed depth of 6 cut it off before user code. Unity burns ~7
-      levels of scaffolding first, so `AppManager.Awake()` (1512ms) and `TeamsScreen.Awake()`
-      (412ms) came back childless with unexplainable self time, and hand-placed
+      levels of scaffolding first, so a 1.5 s boot `Awake()` and a 412 ms screen `Awake()`
+      came back childless with unexplainable self time, and hand-placed
       `Profiler.BeginSample` markers at depth 8+ never appeared at all. Capture now stores 16
       levels; the CLI prints a depth-6 slice by default so payloads are unchanged.
 - [x] Added: `diagnose --focus <marker>` re-roots the tree at one marker and returns its whole
@@ -133,13 +133,13 @@ is not in the repo (it quotes a private project's data).
       `profilot init` + `status` on a fresh project skeleton.
 
 ### Release workflow (repeat each version)
-1. Bump `Packages/com.profilot.profilot/package.json` + move CHANGELOG `[Unreleased]` -> `[x.y.z]`.
-   Bump `cli/package.json` to the same version only when the CLI changed (a package-only patch
-   leaves npm alone).
+1. Bump `Packages/com.profilot.profilot/package.json`, `cli/package.json` and the guide's first
+   line (`<!-- profilot-guide x.y.z -->`) to the same version - they always release together, and
+   `profilot status` warns when they differ. Move CHANGELOG `[Unreleased]` -> `[x.y.z]`.
 2. Commit on main, `git tag vX.Y.Z`, push main + tag.
 3. Move the moving branch: `git branch -f release vX.Y.Z && git push -f origin release`.
 4. `gh release create vX.Y.Z`. Consuming projects on `#release` just Refresh in Package Manager.
-5. If the CLI changed: `cd cli && npm publish` (prepack copies the guide in).
+5. `cd cli && npm publish` (prepack copies the guide and the field reference in).
 
 - [x] Released v0.5.0: GitHub release + first npm publish of `profilot`, verified by a
       registry install into a clean prefix + `profilot init` on a fresh project skeleton.
@@ -154,10 +154,9 @@ is not in the repo (it quotes a private project's data).
 ### Todo
 - [ ] Have Claude Code diagnose a captured event in a fresh project (the last hop of the E2E,
       covered so far only by the CLI output)
-- [ ] Make `CaptureIntegrationTests` assert a mapped marker (not just "an event exists"), so a
-      no-frame regression like the v0.5.1 bug fails the suite
-- [ ] English version of the diagnosis guide for public users (today it is Hebrew)
-- [ ] Product-facing README / getting-started (technical-product-writer pass)
+- [x] Make `CaptureIntegrationTests` assert a mapped marker (not just "an event exists") - done in 0.6
+- [x] English version of the diagnosis guide for public users - done in 0.7
+- [x] Product-facing README / getting-started - done in 0.8
 
 ## Owner decisions still open (from SPEC.md)
 - [ ] Q4 - future consented `apply` mode, or stay proposal-only forever

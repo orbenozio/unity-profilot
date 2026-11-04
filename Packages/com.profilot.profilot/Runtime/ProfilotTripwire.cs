@@ -10,8 +10,8 @@ namespace Profilot
     /// the editor capture service then fetches the full problem frame and writes an event
     /// record. There is no LLM call here.
     ///
-    /// Counters are only meaningful in the Editor and in development builds; in release
-    /// players most markers are stripped (SPEC.md NG3), so the tripwire does not boot there.
+    /// Editor Play Mode only: the capture that turns a trip into an event is an Editor service,
+    /// so in a player build (development or not) the tripwire would sample for nothing.
     /// Hot-path rule (SPEC.md M8): no allocations in the per-frame sampling path.
     /// </summary>
     [DefaultExecutionOrder(int.MaxValue)]
@@ -94,8 +94,8 @@ namespace Profilot
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
         {
-            // Only where profiler data exists and is trustworthy.
-            if (!Application.isEditor && !Debug.isDebugBuild)
+            // Only in the Editor, where the capture service turns a trip into an event.
+            if (!Application.isEditor)
                 return;
 
             var host = new GameObject("[Profilot] Tripwire")

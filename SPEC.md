@@ -1,3 +1,10 @@
+> **Historical document (in Hebrew).** This is the design spec Profilot was built from. Several
+> sections no longer match the code: the 16.6 ms budget (hitches are relative to the project's
+> baseline), UI Toolkit (the window is IMGUI), the `events/` folder (it is `runs/<run>/`), schema
+> "1" and the Reviewed / Not-an-issue buttons (now schema 3 and Fixed / Ignore), and development
+> builds (Profilot runs in Editor Play Mode only). For current behaviour see the README, the
+> package CHANGELOG and `profilot reference`.
+
 # Profilot - אפיון
 
 > מסמך אפיון מאוחד. כל סקשן בבעלות סוכן אחד בלבד.
@@ -647,7 +654,7 @@ ProfilotEvent {
 
 **אסטרטגיית חיתוך `markerTree`.** עץ ה-markers הגולמי יכול להכיל אלפי צמתים; שמירתו במלואו תנפח את הקובץ ותאט את הנרמול. כלל החיתוך: **שומרים כל ענף ש-`selfTimeMs` שלו מעל סף יחסי (ברירת מחדל ~1% מזמן הפריים) או ש-`gcAllocBytes` שלו מעל 0; משם שומרים top-N ילדים בכל רמה (ברירת מחדל N=8) - מדורגים לפי `gcAllocBytes` באירוע alloc-ranked (gc_spike) או לפי self time אחרת, כך שהמקצה לא נדחק מחוץ ל-N - ותוחמים את מספר הצמתים הכולל (ברירת מחדל 4000, כשומר סף מפני פריים רחב פתולוגית).** צמתים שנחתכו מתקפלים ל-marker סינתטי אחד (`<other>` עם `selfTimeMs`, `gcAllocBytes` ו-`collapsed`=K) כדי שלא ייעלמו מהתמונה לא זמן ולא הקצאה. `topMarkers` נגזר מהעץ המלא *לפני* החיתוך (לפי self time / alloc יורד) כדי שה-N הדומיננטיים תמיד נשמרים גם אם נחתכו מהעץ ההיררכי. הספים האלה ניתנים לכוונון ונכללים בכיול שלב 3.
 
-**עומק הוא הממד היחיד שלא נחתך אגרסיבית - וזו הייתה טעות בכיול הראשוני.** Unity שורף בערך שבע רמות scaffolding משלו לפני השורה הראשונה של קוד משתמש (`PlayerLoop > UpdateScene > Update.ScriptRunBehaviourUpdate > BehaviourUpdate > EventSystem.Update > Instantiate > Instantiate.Awake > TeamsScreen.Awake`), כך שקאפ עומק של 6 חתך את העץ בדיוק במקום שבו מתחילה התשובה: המרקר האשם חזר כ-leaf חסר ילדים עם self time גדול שאי אפשר לפרק, ומרקרים ידניים של `Profiler.BeginSample` בעומק 8+ לא הופיעו כלל. שני תיקונים:
+**עומק הוא הממד היחיד שלא נחתך אגרסיבית - וזו הייתה טעות בכיול הראשוני.** Unity שורף בערך שבע רמות scaffolding משלו לפני השורה הראשונה של קוד משתמש (`PlayerLoop > UpdateScene > Update.ScriptRunBehaviourUpdate > BehaviourUpdate > EventSystem.Update > Instantiate > Instantiate.Awake > InventoryPanel.Awake`), כך שקאפ עומק של 6 חתך את העץ בדיוק במקום שבו מתחילה התשובה: המרקר האשם חזר כ-leaf חסר ילדים עם self time גדול שאי אפשר לפרק, ומרקרים ידניים של `Profiler.BeginSample` בעומק 8+ לא הופיעו כלל. שני תיקונים:
 
 - **הלכידה שומרת עומק 16** (`markerTreeDepth`), וה-**CLI** מחליט כמה להדפיס: פרוסה בעומק 6 כברירת מחדל (כדי שה-payload לא ישתנה), `--depth <n>` להרחבה, ו-`--focus <marker>` שמשרש מחדש את העץ במרקר מסוים ומדפיס את כל תת-העץ שלו בעומק מלא. `--focus` הוא הכלי העיקרי: הוא נותן את כל מה שמתחת למרקר אחד בלי לנפח את שאר הרשומה.
 - **`topMarkers` מדורג על הפריים כולו בכל עומק**, ולא על העץ החתוך. הדירוג מוסיף קריאות עמודה בלבד ולא בתים ל-payload (הרשימה עדיין top-N), כך שמרקר עמוק כבר לא יכול להיות בלתי-נראה רק בגלל איפה שהוא יושב.

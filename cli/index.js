@@ -253,7 +253,7 @@ function treeDepth(node) {
 
 // Every node whose name contains `needle` (case-insensitive), each with the marker path from the
 // root. Substring is the right matcher here: real Unity marker names are long and decorated
-// ("Assembly-CSharp.dll!::TeamsScreen.Awake() [Invoke]"), so nobody types them exactly.
+// ("Assembly-CSharp.dll!::InventoryPanel.Awake() [Invoke]"), so nobody types them exactly.
 function findMatches(node, needle, path = [], out = []) {
   if (!node || typeof node !== 'object') return out;
   const name = String(node.name || '');
@@ -779,6 +779,7 @@ Usage:
   profilot list [--run <run>] [--text]      events, newest first
   profilot runs [--text]                    Play runs, newest first
   profilot status [--text]                  store, versions and warnings
+  profilot reference                        how to read every field (Markdown, for Claude Code)
   profilot init [--path <dir>] [--no-package]
                                             wire a Unity project: package, guide, CLAUDE.md
   profilot --version
@@ -833,14 +834,23 @@ const PACKAGE_URL = 'https://github.com/orbenozio/unity-profilot.git?path=/Packa
 const GUIDE_FILE = 'profilot-diagnosis-guide.md';
 const GUIDE_IMPORT = `@.claude/${GUIDE_FILE}`;
 
-// The published package carries the guide next to index.js (copied in by prepack); a clone run
-// through `npm link` reads it from the repo root instead, so there is one source of truth.
-function findGuide() {
-  for (const p of [path.join(__dirname, GUIDE_FILE), path.join(__dirname, '..', GUIDE_FILE)]) {
+// The published package carries the guide (and the field reference) next to index.js, copied in
+// by prepack; a clone run through `npm link` reads them from the repo root instead, so there is
+// one source of truth.
+function findShipped(file) {
+  for (const p of [path.join(__dirname, file), path.join(__dirname, '..', file)]) {
     if (fs.existsSync(p)) return p;
   }
   return null;
 }
+
+function findGuide() {
+  return findShipped(GUIDE_FILE);
+}
+
+// The field-by-field reading notes. They used to sit in the guide, which loads into every Claude
+// session in the project; now the slim guide asks Claude to run this once, when it diagnoses.
+const REFERENCE_FILE = 'profilot-field-reference.md';
 
 // A Unity project root is a folder with Packages/manifest.json and ProjectSettings/. Library/ is
 // not a usable marker here: it may not exist yet on a fresh clone.
@@ -937,6 +947,12 @@ function main() {
     process.stdout.write(HELP);
     return;
   }
+  if (command === 'reference') {
+    const ref = findShipped(REFERENCE_FILE);
+    if (ref) process.stdout.write(fs.readFileSync(ref, 'utf8'));
+    else print({ status: 'error', message: `${REFERENCE_FILE} is missing from this install.` });
+    return;
+  }
 
   const { flags, error } = parseArgs(argv);
   const base = findBase();
@@ -970,7 +986,7 @@ function main() {
       default:
         result = {
           status: 'error',
-          message: `Unknown command "${command}". Commands: diagnose, list, runs, status, init, --version. Run \`profilot --help\` for options.`,
+          message: `Unknown command "${command}". Commands: diagnose, list, runs, status, reference, init, --version. Run \`profilot --help\` for options.`,
         };
     }
   }

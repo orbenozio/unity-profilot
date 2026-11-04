@@ -1,8 +1,8 @@
 # profilot (CLI)
 
-Pure-transport CLI for Profilot. It reads the per-run file store the Unity editor layer writes
-(`Library/Profilot/runs/<run>/`) and prints structured JSON to stdout for Claude Code. It never
-calls an LLM and never writes to the store.
+Pure-transport CLI for Profilot. It reads the per-run file store the Unity package writes in Editor
+Play Mode (`Library/Profilot/runs/<run>/`) and prints structured JSON to stdout for Claude Code. It
+never calls an LLM and never writes to the store.
 
 ## Install
 
@@ -12,32 +12,40 @@ profilot init          # from the Unity project folder - package, guide, CLAUDE.
 ```
 
 `init` is the only command that writes, and only to project config (`Packages/manifest.json`,
-`.claude/profilot-diagnosis-guide.md`, `CLAUDE.md`). It is idempotent. `--path <dir>` targets
-another folder, `--no-package` leaves the manifest alone.
+`.claude/profilot-diagnosis-guide.md`, `CLAUDE.md`). It is idempotent. An edited guide is kept as
+`.bak` before it is refreshed. `--path <dir>` targets another folder, `--no-package` leaves the
+manifest alone.
 
 ## Commands
 
 ```
-profilot diagnose --last                 # the most recently captured event (full record)
-profilot diagnose --id <eventId>         # a specific event (newest run that has it)
-profilot diagnose --id <eventId> --run <run>   # ...from a specific run
-profilot diagnose --id <eventId> --focus <markerName>   # re-root the tree at a marker
-profilot diagnose --id <eventId> --depth <n>            # print n levels instead of the default
-profilot list                            # event summaries across all runs (each tagged with its run)
-profilot list --run <run>                # ...only that run
-profilot runs                            # the runs, newest first, with event counts
-profilot status                          # store present? run/event counts, latest, versions
-profilot --version                       # the CLI version
+profilot diagnose [--last]               # the newest open or regressed event (the default)
+profilot diagnose --worst                # the costliest open or regressed event of the newest run
+profilot diagnose --id <eventId>         # one event (newest run that has it), even if muted
+profilot diagnose ... --run <run>        # pin a run
+profilot diagnose ... --focus <markerName>   # re-root the tree at a marker
+profilot diagnose ... --depth <n>        # print n levels instead of the default
+profilot list [--run <run>] [--text]     # event summaries, newest first
+profilot runs [--text]                   # the runs, newest first ("clean" = nothing caught)
+profilot status [--text]                 # store, counts, latest, versions, warnings
+profilot reference                       # the field-by-field reading notes (Markdown)
+profilot --help | --version
 ```
 
+Options are strict: an unknown option, a stray argument (`diagnose evt_x`), a missing value or an
+unknown run is an error that lists the valid choices. `--flag=value` works like `--flag value`.
+`--id` and `--run` must be plain names inside the store.
+
 Each Play Mode session is a "run", identified by its start time (e.g. `2026-07-06_14-32-05`).
-Results are grouped by run, so you can tell which run an event came from and diagnose a specific
-one. Review decisions (`open` / `fixed` / `regressed` / `ignored`) are overlaid from
-`reviews.json` and apply across runs.
+Since 0.8 every Play creates its run, so a run that caught nothing exists as a clean run.
+
+Review decisions (`open` / `fixed` / `regressed` / `ignored`) come from `reviews.json` and apply
+across runs; when that file exists, an event missing from it is open. `--last` and `--worst` skip
+fixed and ignored events; `--id` serves them.
 
 `status` also reports `versions` (CLI, Unity package, schema, and whether the project's guide copy
-is current) plus `warnings` when they drift. A record written by an older package comes back with
-a `compat` block listing the fields it lacks.
+is current, edited or outdated) plus `warnings` when they drift. A record written by an older
+package comes back with a `compat` block listing the fields it lacks.
 
 Every command exits 0; failures are reported as a `status` field in the JSON
 (`ok` / `no_data` / `error`), so an agent can branch on the payload, not the exit code.
@@ -48,7 +56,7 @@ Unity spends roughly seven levels of its own scaffolding before the first line o
 
 ```
 PlayerLoop > UpdateScene > Update.ScriptRunBehaviourUpdate > BehaviourUpdate
-  > EventSystem.Update > Instantiate > Instantiate.Awake > TeamsScreen.Awake
+  > EventSystem.Update > Instantiate > Instantiate.Awake > InventoryPanel.Awake
 ```
 
 `diagnose` prints a shallow slice of the tree by default, which keeps the payload small but ends
@@ -56,11 +64,11 @@ right where the answer starts - the culprit comes back looking like a childless 
 unexplained self time. `--focus` re-roots the tree at one marker and prints its **whole** subtree:
 
 ```
-profilot diagnose --id evt_frame_hitch_TeamsScreen.Awake --focus "TeamsScreen.Awake"
+profilot diagnose --id evt_frame_hitch_InventoryPanel.Awake --focus "InventoryPanel.Awake"
 ```
 
 The match is a case-insensitive **substring**, because real marker names are long and decorated
-(`Assembly-CSharp.dll!::TeamsScreen.Awake() [Invoke]`) and nobody types them exactly. If several
+(`Assembly-CSharp.dll!::InventoryPanel.Awake() [Invoke]`) and nobody types them exactly. If several
 markers match, the heaviest subtree wins and the rest are listed under `focus.otherMatches`. If
 nothing matches, the response is a `status: "error"` carrying `focusCandidates` - the names that
 do exist - so the retry is one step, not a guess.
@@ -86,6 +94,20 @@ children were dropped carries `"truncated": "depth"` (out of levels) or `"trunca
 tree is stored or printed. A marker that sits below the tree's depth - which is where hand-placed
 `Profiler.BeginSample` markers usually end up - still appears in `topMarkers` if it owns the
 frame's largest self time or allocation.
+
+## Is it still happening?
+
+Every record carries `recurrence`, computed per event across runs:
+
+```json
+"recurrence": { "lastSeenRun": "2026-07-06_14-32-05", "newestRun": "2026-07-06_15-10-41",
+                "seenInNewestRun": false, "runsSeen": 3, "runsSince": 1 },
+"stale": true,
+"ageDays": 0.4
+```
+
+`stale` means exactly "not caught in the newest run". A fixed problem that comes back below the
+regression line shows `review.seenAgainAfterFixed` (count, last run, largest value).
 
 ## When the record is not from the newest run
 

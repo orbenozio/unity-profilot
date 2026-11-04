@@ -6,7 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-04
+
+Works through the 2026-11-03 team re-review of 0.7 (fixes 1-8). The headline: "is it fixed?" now
+has a reliable answer, frames are matched to their trip strictly, and the CLI and window are
+easier to use and harder to misuse.
+
 ### Changed
+- Profilot runs in **Editor Play Mode only**. The tripwire no longer starts in development player
+  builds, where nothing could turn a trip into an event.
+- The diagnosis guide is short (it loads into every Claude session in the project). The
+  field-by-field notes moved to `profilot-field-reference.md`, printed by `profilot reference`.
+- Public docs use neutral example names; the README leads with a quickstart, requirements
+  (Claude Code included) and troubleshooting.
 - "Is it fixed?" has a real answer. Every Play now creates its run folder and `run.json` on entry,
   so a run that catches nothing exists as a clean run. The CLI computes recurrence **per event**
   (`recurrence.lastSeenRun`, `seenInNewestRun`, `runsSince`, `ageDays`); `stale` now means "not
@@ -156,7 +168,7 @@ fresh Unity 6000.3 project against v0.5.1 and verified fixed there.
 ### Added
 - `profilot diagnose --focus <markerName>` re-roots the marker tree at one marker and returns its
   whole subtree at full depth. The match is a case-insensitive substring, because real marker
-  names are long and decorated (`Assembly-CSharp.dll!::TeamsScreen.Awake() [Invoke]`). When
+  names are long and decorated (`Assembly-CSharp.dll!::InventoryPanel.Awake() [Invoke]`). When
   several markers match, the heaviest subtree wins and the rest are listed under
   `focus.otherMatches`; when none match, the error carries `focusCandidates` so the retry is one
   step rather than a guess.

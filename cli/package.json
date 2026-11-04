@@ -1,17 +1,18 @@
 {
   "name": "profilot",
-  "version": "0.7.0",
-  "description": "CLI for Profilot - exposes captured Unity Profiler events to Claude Code as structured JSON.",
+  "version": "0.8.0",
+  "description": "CLI for Profilot - prints the Unity performance events Profilot captured in Editor Play Mode as JSON for Claude Code.",
   "bin": {
     "profilot": "index.js"
   },
   "files": [
     "index.js",
-    "profilot-diagnosis-guide.md"
+    "profilot-diagnosis-guide.md",
+    "profilot-field-reference.md"
   ],
   "scripts": {
     "test": "node --test",
-    "prepack": "node -e \"const fs=require('fs');fs.copyFileSync('../profilot-diagnosis-guide.md','profilot-diagnosis-guide.md');fs.copyFileSync('../LICENSE','LICENSE')\""
+    "prepack": "node -e \"const fs=require('fs');for(const f of ['profilot-diagnosis-guide.md','profilot-field-reference.md','LICENSE'])fs.copyFileSync('../'+f,f)\""
   },
   "type": "commonjs",
   "engines": {

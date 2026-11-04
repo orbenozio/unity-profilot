@@ -235,7 +235,7 @@ const SCAFFOLD = [
   'EventSystem.Update',
   'Instantiate',
   'Instantiate.Awake',
-  'Assembly-CSharp.dll!::TeamsScreen.Awake() [Invoke]', // depth 7 - the culprit
+  'Assembly-CSharp.dll!::InventoryPanel.Awake() [Invoke]', // depth 7 - the culprit
   'DIAG.TS.LoadIcons', // depth 8 - invisible at the old fixed depth
   'DIAG.TS.Inner', // depth 9
 ];
@@ -260,7 +260,7 @@ function deepTree(names = SCAFFOLD) {
   return node;
 }
 
-function deepEvent(eventId = 'evt_frame_hitch_TeamsScreen.Awake', sessionId = '2026-06-25_10-00-00') {
+function deepEvent(eventId = 'evt_frame_hitch_InventoryPanel.Awake', sessionId = '2026-06-25_10-00-00') {
   const e = sampleEvent(eventId, 'frame_hitch', '2026-06-25T10:00:00Z', 'open', sessionId);
   e.markerTree = deepTree();
   e.markerTreeDepth = 16;
@@ -290,7 +290,7 @@ test('diagnose: the default payload is unchanged - 6 levels, and it says it was 
 test('diagnose --depth: reaches markers the default depth cuts off', () => {
   const p = makeProject([deepEvent()]);
   const r = run(p, ['diagnose', '--last', '--depth', '9']);
-  assert.equal(nodeAt(r.markerTree, 7).name, 'Assembly-CSharp.dll!::TeamsScreen.Awake() [Invoke]');
+  assert.equal(nodeAt(r.markerTree, 7).name, 'Assembly-CSharp.dll!::InventoryPanel.Awake() [Invoke]');
   assert.equal(nodeAt(r.markerTree, 9).name, 'DIAG.TS.Inner');
 });
 
@@ -309,8 +309,8 @@ test('diagnose --depth: rejects a non-numeric value', () => {
 
 test('diagnose --focus: re-roots at a substring match and returns the whole subtree', () => {
   const p = makeProject([deepEvent()]);
-  const r = run(p, ['diagnose', '--last', '--focus', 'TeamsScreen.Awake']);
-  assert.equal(r.markerTree.name, 'Assembly-CSharp.dll!::TeamsScreen.Awake() [Invoke]');
+  const r = run(p, ['diagnose', '--last', '--focus', 'InventoryPanel.Awake']);
+  assert.equal(r.markerTree.name, 'Assembly-CSharp.dll!::InventoryPanel.Awake() [Invoke]');
   assert.equal(r.focus.depth, 7);
   assert.equal(r.focus.path[0], 'PlayerLoop');
   assert.equal(r.focus.matchCount, 1);
@@ -336,8 +336,8 @@ test('diagnose --focus: several matches - heaviest wins, the rest are listed', (
 
 test('diagnose --focus --depth: the subtree is trimmed too', () => {
   const p = makeProject([deepEvent()]);
-  const r = run(p, ['diagnose', '--last', '--focus', 'TeamsScreen.Awake', '--depth', '1']);
-  assert.equal(r.markerTree.name, 'Assembly-CSharp.dll!::TeamsScreen.Awake() [Invoke]');
+  const r = run(p, ['diagnose', '--last', '--focus', 'InventoryPanel.Awake', '--depth', '1']);
+  assert.equal(r.markerTree.name, 'Assembly-CSharp.dll!::InventoryPanel.Awake() [Invoke]');
   assert.equal(nodeAt(r.markerTree, 1).name, 'DIAG.TS.LoadIcons');
   assert.equal(nodeAt(r.markerTree, 1).children, undefined);
 });
@@ -846,4 +846,18 @@ test('fixed, then seen again below the regression line: shown, still muted', () 
   });
   assert.deepEqual(run(p, ['list']).events[0].seenAgainAfterFixed, { count: 4, lastRun: '2026-06-25_10-00-00', maxValue: 1200 });
   assert.equal(run(p, ['diagnose', '--last']).status, 'no_data');
+});
+
+test('reference: prints the field reference the slim guide points at', () => {
+  const out = execFileSync('node', [CLI, 'reference'], { encoding: 'utf8' });
+  assert.match(out, /^# Profilot - field reference/);
+  assert.match(out, /frameMatchesTrigger/);
+  assert.match(shippedGuide(), /profilot reference/);
+});
+
+test('package: the npm files and prepack carry the guide and the field reference', () => {
+  const pkg = require('./package.json');
+  for (const f of ['index.js', 'profilot-diagnosis-guide.md', 'profilot-field-reference.md']) assert.ok(pkg.files.includes(f), f);
+  for (const f of ['profilot-diagnosis-guide.md', 'profilot-field-reference.md', 'LICENSE']) assert.ok(pkg.scripts.prepack.includes(f), f);
+  assert.ok(fs.existsSync(path.join(__dirname, '..', 'profilot-field-reference.md')));
 });
