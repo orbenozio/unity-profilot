@@ -46,12 +46,12 @@ Unity runs about seven levels of its own scaffolding before user code (`PlayerLo
 
 ## Is it still happening? Is it fixed?
 
-- **`recurrence`** - `lastSeenRun` is the newest run that caught this problem, `seenInNewestRun` whether that is the newest run, `runsSince` how many runs came after it, `runsSeen` in how many runs it appeared. Since 0.8 every Play creates a run, so a clean run counts.
+- **`recurrence`** - `lastSeenRun` is the newest run that caught this problem, `seenInNewestRun` whether that is the newest run, `runsSince` how many runs came after it, `runsSeen` in how many runs it appeared. Since 0.8 every Play creates a run, so a clean run counts. `newestRunInProgress: true` means the newest run is still in Play (or ended abruptly); then "newest" is the newest finished run, because not being caught yet proves nothing.
 - **`stale: true`** means exactly "not caught in the newest run". After a fix and a new run, `stale: true` with `runsSince` >= 1 says it did not come back. `stale: false` says it is still happening, even if the record you read is from an older run.
 - **`ageDays`** - how old this record is. Mention it when it is old: the code may have changed.
 - **`runFallback: true`** - `diagnose --id X` without `--run` returned the newest run that contains X, not the newest run. The record is not the current state; `warning` spells it out. Do not report before/after from it; run `profilot list --run <latestRun>`.
 - **`reviewStatus`** - `open` (not triaged), `fixed` (muted; alerts again at 3x its peak), `regressed` (marked fixed, came back worse - lead with it), `ignored` (noise). `--last` and `--worst` skip fixed and ignored events; diagnose one only when the user names it.
-- **`review`** - `markedAt`, `fixedAtPeak`, `seenAgainAfterFixed` (count, last run, largest value: the fix did not fully hold, though nothing alerted), `diagnosisHelped`.
+- **`review`** - `markedAt`, `fixedAtPeak`, `seenAgainAfterFixed` (how many captures since the mark, last run, largest value: the fix did not fully hold, though nothing alerted), `diagnosisHelped`. Only captures whose frame matched the trip count toward regressed or seen again.
 
 ## Versions
 

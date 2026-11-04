@@ -17,8 +17,10 @@ namespace Profilot.Editor
     {
         [Serializable] private class EventSummary
         {
+            public string schemaVersion;
             public string eventId;
             public string status;
+            public bool frameMatchesTrigger;
             public string reviewStatus;
             public string sessionId;
             public string capturedAt;
@@ -455,7 +457,13 @@ namespace Profilot.Editor
                 EditorStyles.boldLabel);
             GUI.color = prev;
 
-            if (e.topMarkers != null && e.topMarkers.Length > 0)
+            // Schema 1 records have no frameMatchesTrigger, so its absence is not "unmatched".
+            bool unmatched = e.status == "ok" && !e.frameMatchesTrigger && e.schemaVersion != null && e.schemaVersion != "1";
+            if (e.topMarkers != null && e.topMarkers.Length > 0 && unmatched)
+                EditorGUILayout.LabelField(new GUIContent($"near {ProfilotText.CleanMarker(e.topMarkers[0].name)} - frame not matched",
+                    "No profiler frame matched this trip in time, so the tree (and this name) may belong to a " +
+                    $"neighbouring frame.\n{e.topMarkers[0].name}"), EditorStyles.miniLabel);
+            else if (e.topMarkers != null && e.topMarkers.Length > 0)
                 EditorGUILayout.LabelField(new GUIContent($"in {ProfilotText.CleanMarker(e.topMarkers[0].name)}",
                     $"The marker the profiler blames:\n{e.topMarkers[0].name}"), EditorStyles.miniBoldLabel);
             else if (e.status == "counters_only")
@@ -517,7 +525,7 @@ namespace Profilot.Editor
                         prev = GUI.color;
                         GUI.color = Orange;
                         EditorGUILayout.LabelField(
-                            $"seen again after Fixed: {againCount}x, last in run {ProfilotText.RunLabel(againRun)} " +
+                            $"caught again after Fixed: {againCount} time{(againCount == 1 ? "" : "s")}, last in run {ProfilotText.RunLabel(againRun)} " +
                             $"(up to {ProfilotText.FormatValue(t.metric, againValue)})",
                             EditorStyles.miniBoldLabel);
                         GUI.color = prev;

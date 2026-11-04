@@ -77,12 +77,14 @@ function runEventFiles(base, run) {
     .filter((f) => f.startsWith('evt_') && f.endsWith('.json') && !f.endsWith('.tmp'));
 }
 
-// --id and --run end up in a filesystem path, so they are checked as names first and the joined
-// path must stay inside the store: `--id ../../reviews` used to return reviews.json as an event.
-const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// --id and --run end up in a filesystem path, so they are checked as names first (no path
+// separators) and the joined path must stay inside the store: `--id ../../reviews` used to return
+// reviews.json as an event. Letters are Unicode and ".." is allowed inside a name, because the
+// package writes ids such as evt_frame_hitch_Foo..ctor and evt_gc_spike_Über.Update.
+const NAME_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N}._-]*$/u;
 
 function validName(s) {
-  return typeof s === 'string' && NAME_PATTERN.test(s) && !s.includes('..');
+  return typeof s === 'string' && NAME_PATTERN.test(s);
 }
 
 function inside(root, file) {
@@ -155,6 +157,18 @@ function reviewDetail(rec, reviews) {
 
 // What one read needs to know about the whole store: the runs (newest first), the review
 // decisions, and in which runs each event was caught.
+// A run whose run.json has no endedAt is still in Play (or ended abruptly). Not being caught in
+// it yet is not evidence of a fix, so recurrence measures against the newest FINISHED run then.
+function runInProgress(base, run) {
+  const p = path.join(runsRoot(base), run, 'run.json');
+  if (!fs.existsSync(p)) return false;
+  try {
+    return !readJson(p).endedAt;
+  } catch (_) {
+    return false;
+  }
+}
+
 function storeContext(base) {
   const runs = listRuns(base);
   const seenIn = new Map();
@@ -165,7 +179,8 @@ function storeContext(base) {
       seenIn.get(id).push(r);
     }
   }
-  return { runs, newestRun: runs[0], reviews: reviewMap(base), seenIn };
+  const inProgress = runs.length > 0 && runInProgress(base, runs[0]);
+  return { runs, newestRun: runs[0], newestInProgress: inProgress, reviews: reviewMap(base), seenIn };
 }
 
 // Recurrence is per EVENT, not per record: "is this problem still happening?" is answered by the
@@ -175,12 +190,16 @@ function recurrence(eventId, ctx) {
   const seen = ctx.seenIn.get(eventId) || [];
   const lastSeenRun = seen[0];
   const idx = lastSeenRun ? ctx.runs.indexOf(lastSeenRun) : -1;
+  // Caught in the run still in progress: current. Not caught there yet: judge by the newest
+  // finished run instead, and do not count the open run as a clean one.
+  const reference = ctx.newestInProgress && lastSeenRun !== ctx.newestRun ? ctx.runs[1] : ctx.newestRun;
   return {
     lastSeenRun,
     newestRun: ctx.newestRun,
-    seenInNewestRun: !!lastSeenRun && lastSeenRun === ctx.newestRun,
+    ...(ctx.newestInProgress ? { newestRunInProgress: true } : {}),
+    seenInNewestRun: !!lastSeenRun && lastSeenRun === reference,
     runsSeen: seen.length,
-    runsSince: idx < 0 ? undefined : idx,
+    runsSince: idx < 0 ? undefined : ctx.newestInProgress && lastSeenRun !== ctx.newestRun ? Math.max(0, idx - 1) : idx,
   };
 }
 
@@ -445,11 +464,11 @@ function withCompat(rec) {
 const GUIDE_HEADER = /^<!--\s*profilot-guide\s+([0-9][0-9.]*)\s*-->/;
 
 function normalizeText(s) {
-  return s.replace(/\r\n/g, '\n').replace(/\s+$/, '');
+  return s.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\s+$/, '');
 }
 
 function guideVersion(text) {
-  const m = GUIDE_HEADER.exec(text);
+  const m = GUIDE_HEADER.exec(text.replace(/^\uFEFF/, ''));
   return m ? m[1] : null;
 }
 
@@ -463,7 +482,8 @@ function compareVersions(a, b) {
   return 0;
 }
 
-// current | edited (same version, local changes) | outdated (an older guide) | missing | unknown
+// current | edited (same version, local changes) | outdated (an older guide) | newer (from a newer
+// CLI than this one) | missing | unknown
 function guideState(base) {
   const src = findGuide();
   if (!src || !base) return 'unknown';
@@ -473,7 +493,10 @@ function guideState(base) {
   const local = fs.readFileSync(copy, 'utf8');
   if (normalizeText(local) === normalizeText(shipped)) return 'current';
   const v = guideVersion(local);
-  return v && v === guideVersion(shipped) ? 'edited' : 'outdated';
+  const mine = guideVersion(shipped);
+  if (v && v === mine) return 'edited';
+  if (v && mine && compareVersions(v, mine) > 0) return 'newer';
+  return 'outdated';
 }
 
 function versions(base) {
@@ -516,6 +539,7 @@ function versions(base) {
     warnings.push('The project guide copy is from an older Profilot. Run `profilot init` to refresh it (your copy is kept as a .bak).');
   }
   if (out.guide === 'missing') warnings.push('The project has no Profilot guide. Run `profilot init`.');
+  if (out.guide === 'newer') warnings.push('The project guide copy is from a newer Profilot than this CLI. Update the CLI: npm install -g profilot');
   if (out.guide === 'edited') {
     notes.push('The project guide copy has local edits. `profilot init` would replace it and keep your copy as a .bak.');
   }

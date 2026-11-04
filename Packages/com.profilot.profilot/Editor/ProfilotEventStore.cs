@@ -26,7 +26,7 @@ namespace Profilot.Editor
         public const string RunInfoFile = "run.json";
 
         // The run currently being written; set by the capture service on play start.
-        public static string CurrentRun = "session";
+        public static string CurrentRun = "editor";
 
         // Cap per run so one pathological run cannot grow without bound; dedup already keeps
         // this to the number of DISTINCT problems in the run.
@@ -192,11 +192,14 @@ namespace Profilot.Editor
 
         private static void WriteAtomic(string path, string content)
         {
+            // Replace in one step when the target exists: delete-then-move left a gap in which the
+            // CLI could find no reviews.json and fall back to the statuses baked into records.
             string tmp = path + ".tmp";
             File.WriteAllText(tmp, content);
             if (File.Exists(path))
-                File.Delete(path);
-            File.Move(tmp, path);
+                File.Replace(tmp, path, null);
+            else
+                File.Move(tmp, path);
         }
     }
 }

@@ -157,11 +157,28 @@ namespace Profilot.Editor
             return peak;
         }
 
+        // The run id survives a domain reload. With "Recompile And Continue Playing" the Editor
+        // reloads mid-Play and EnteredPlayMode does not fire again, so the id used to fall back to
+        // a default and the rest of the run was written into a folder that sorts as the oldest.
+        private const string RunIdKey = "Profilot.RunId";
+        private const string RunStartedKey = "Profilot.RunStartedAt";
+
         static ProfilotEventCapture()
         {
             EditorApplication.update += OnUpdate;
             EditorApplication.playModeStateChanged += OnPlayModeChanged;
             LoadReviews();
+
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                string run = SessionState.GetString(RunIdKey, string.Empty);
+                if (ProfilotEventStore.IsRunId(run))
+                {
+                    _sessionId = run;
+                    ProfilotEventStore.CurrentRun = run;
+                    _runStartedAt = SessionState.GetString(RunStartedKey, string.Empty);
+                }
+            }
         }
 
         [System.Serializable] private class ReviewRecord
@@ -301,7 +318,9 @@ namespace Profilot.Editor
         {
             if (!Reviewed.TryGetValue(eventId, out Review r) || r.Status != "fixed")
                 return;
-            r.SeenAgainCount += signal.RepeatCount + 1;
+            // One per capture: signal.RepeatCount folds in every repeat of the TYPE during the
+            // cooldown, most of them other problems', so it would inflate this count.
+            r.SeenAgainCount++;
             r.SeenAgainRun = _sessionId;
             r.SeenAgainValue = Math.Max(r.SeenAgainValue, signal.Value);
             if (SeenAgainThisRun.Add(eventId))
@@ -363,6 +382,10 @@ namespace Profilot.Editor
                 // A trip from the last moments of the run is still waiting for its frame: write
                 // it with the best frame seen so far instead of dropping it.
                 bool deepNow = Profiler.enabled;
+                Buffer.Clear();
+                ProfilotTripChannel.Drain(Buffer);
+                foreach (TripSignal signal in Buffer)
+                    PendingCaptures.Add(new PendingCapture { Signal = signal, RequestedFrameIndex = ProfilerDriver.lastFrameIndex });
                 foreach (PendingCapture p in PendingCaptures)
                 {
                     try { Flush(p, deepNow); }
@@ -379,6 +402,8 @@ namespace Profilot.Editor
 
                 try { ProfilotEventStore.WriteRunInfo(_sessionId, BuildRunInfo(true)); }
                 catch { /* best effort */ }
+                SessionState.EraseString(RunIdKey);
+                SessionState.EraseString(RunStartedKey);
 
                 // Leave the Profiler window the way the user had it.
                 if (_driverWasEnabled == false)
@@ -396,6 +421,8 @@ namespace Profilot.Editor
             _sessionId = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
             ProfilotEventStore.CurrentRun = _sessionId;
             _runStartedAt = DateTime.UtcNow.ToString("o");
+            SessionState.SetString(RunIdKey, _sessionId);
+            SessionState.SetString(RunStartedKey, _runStartedAt);
             SeenAgainThisRun.Clear();
             _reviewsDirty = false;
 
@@ -557,9 +584,13 @@ namespace Profilot.Editor
             acc.Count += signal.RepeatCount + 1;
             acc.Peak = Math.Max(acc.Peak, signal.Value);
 
-            // Before the record is built, so it already carries "regressed".
-            bool regressed = CheckRegression(eventId, signal.Value);
-            if (!regressed)
+            // Before the record is built, so it already carries "regressed". Only a capture whose
+            // frame matched the trip may change a decision: an unmatched one is named after a
+            // neighbouring frame's marker, so it could flip some other fixed problem to
+            // "regressed" or count it as seen again with a value that was never its own.
+            bool attributed = !deep || frameMatches;
+            bool regressed = attributed && CheckRegression(eventId, signal.Value);
+            if (attributed && !regressed)
                 NoteSeenAgain(eventId, signal);
 
             string likelyCause = LikelyCause(dominantMarker);
@@ -583,10 +614,13 @@ namespace Profilot.Editor
             // session (repeats already fold into the dedup count), never per frame, no LLM, and
             // never for a problem the user has muted via Fixed / Ignore. A fixed problem that came
             // back worse alerts once more, on the transition.
-            if ((regressed || (isNewProblem && !IsMuted(eventId))) && signal.FrameCount != _lastNotifiedFrame)
+            // A regression always alerts: it fires only on the transition, so suppressing it as
+            // "same frame as another problem" would lose it for good.
+            if (regressed || (isNewProblem && !IsMuted(eventId) && signal.FrameCount != _lastNotifiedFrame))
             {
                 _lastNotifiedFrame = signal.FrameCount;
-                ProfilotNotifier.OnProblemCaught(eventId, _sessionId, signal.Type, dominantMarker, acc.Count, regressed);
+                ProfilotNotifier.OnProblemCaught(eventId, _sessionId, signal.Type, dominantMarker, acc.Count, regressed,
+                    matched: attributed);
             }
         }
 
@@ -726,14 +760,16 @@ namespace Profilot.Editor
                 {
                     st.Valid = true;
                     st.FrameMs = raw.frameTimeMs;
+                    // A counter registered but not sampled in this frame has no value; reading it
+                    // would give a false 0 and skip the hierarchy fallback.
                     int gcId = raw.GetMarkerId("GC Allocated In Frame");
-                    if (gcId != FrameDataView.invalidMarkerId)
+                    if (gcId != FrameDataView.invalidMarkerId && raw.HasCounterValue(gcId))
                     {
                         st.Gc = raw.GetCounterValueAsLong(gcId);
                         st.GcFromCounter = true;
                     }
                     int drawId = raw.GetMarkerId("Draw Calls Count");
-                    if (drawId != FrameDataView.invalidMarkerId)
+                    if (drawId != FrameDataView.invalidMarkerId && raw.HasCounterValue(drawId))
                         st.Draws = raw.GetCounterValueAsInt(drawId);
                 }
             }

@@ -81,8 +81,9 @@ namespace Profilot.EditorTests
             ProfilotEventCapture.NoteSeenAgain("evt_a", Signal(400, repeats: 2));
             ProfilotEventCapture.NoteSeenAgain("evt_a", Signal(600));
 
+            // One per capture: the repeats folded into a trip belong to the whole trigger type.
             Assert.IsTrue(ProfilotEventCapture.SeenAgainAfterFixed("evt_a", out int count, out _, out double max));
-            Assert.AreEqual(4, count);
+            Assert.AreEqual(2, count);
             Assert.AreEqual(600, max);
             Assert.AreEqual("fixed", ProfilotEventCapture.ReviewStatusOf("evt_a"));
 

@@ -70,15 +70,15 @@ namespace Profilot.PlayTests
 
     /// <summary>
     /// A MILD, isolated hitch: steady work every frame raises the baseline, and every
-    /// <see cref="everyFrames"/> frames one frame takes about 2.5x as long. This is the common
+    /// <see cref="everyFrames"/> frames one frame takes about 2.3x as long. This is the common
     /// case the 0.6 matcher got wrong - a normal neighbouring frame "matched" the trip.
     /// </summary>
     public sealed class MildHitchScenario : MonoBehaviour
     {
         public int startAfterFrames = 75;
         public int everyFrames = 30;
-        public double baseMs = 6.0;
-        public double hitchMs = 16.0;
+        public double baseMs = 7.0;
+        public double hitchMs = 16.0; // ~2.3x the baseline, just over the default 2x line
 
         private int _frame;
         private double _sink;

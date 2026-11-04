@@ -78,18 +78,30 @@ namespace Profilot.Editor
             catch { r.ClaudeMdImports = false; }
 
             r.CliVersion = FindCliVersion();
+
+            // The CLI ships the guide, so a guide is current when it matches the CLI that would
+            // refresh it (a CLI-only patch release must not make `profilot init` look broken).
+            if (r.GuideVersion != null && r.CliVersion != null)
+                r.GuideState = r.GuideVersion == r.CliVersion ? "current" : "outdated";
             return r;
         }
 
         // Unity started from the Hub does not inherit the terminal's PATH (no /opt/homebrew/bin on
-        // a Mac), so ask a login shell, the way the user's terminal would.
+        // a Mac), so ask a login shell, the way the user's terminal would - then an interactive
+        // one, because nvm / fnm / Volta put node on the PATH from ~/.zshrc, which -l skips.
         private static string FindCliVersion()
+        {
+            if (Path.DirectorySeparatorChar == '\\')
+                return Run("cmd.exe", "/c profilot --version");
+            string shell = File.Exists("/bin/zsh") ? "/bin/zsh" : "/bin/bash";
+            return Run(shell, "-lc \"profilot --version\"") ?? Run(shell, "-ilc \"profilot --version\"");
+        }
+
+        private static string Run(string file, string args)
         {
             try
             {
-                var psi = Path.DirectorySeparatorChar == '\\'
-                    ? new ProcessStartInfo("cmd.exe", "/c profilot --version")
-                    : new ProcessStartInfo(File.Exists("/bin/zsh") ? "/bin/zsh" : "/bin/bash", "-lc \"profilot --version\"");
+                var psi = new ProcessStartInfo(file, args);
                 psi.UseShellExecute = false;
                 psi.RedirectStandardOutput = true;
                 psi.RedirectStandardError = true;
@@ -98,8 +110,10 @@ namespace Profilot.Editor
                 {
                     if (p == null)
                         return null;
-                    // Read asynchronously: a shell that hangs must not freeze the Editor.
+                    // Read both streams asynchronously: a shell that hangs must not freeze the Editor,
+                    // and a noisy rc file must not fill the stderr pipe and block the shell.
                     var output = p.StandardOutput.ReadToEndAsync();
+                    var errors = p.StandardError.ReadToEndAsync();
                     if (!p.WaitForExit(4000))
                     {
                         try { p.Kill(); } catch { /* already gone */ }

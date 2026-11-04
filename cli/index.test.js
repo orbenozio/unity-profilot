@@ -794,7 +794,7 @@ test('recurrence: a clean newest run makes the event stale, with the runs since'
   const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z', 'open', '2026-06-25_10-00-00')]);
   for (const r of ['2026-06-26_10-00-00', '2026-06-27_10-00-00']) {
     fs.mkdirSync(runDir(p, r), { recursive: true });
-    fs.writeFileSync(path.join(runDir(p, r), 'run.json'), JSON.stringify({ schemaVersion: '3', run: r }));
+    fs.writeFileSync(path.join(runDir(p, r), 'run.json'), JSON.stringify({ schemaVersion: '3', run: r, endedAt: '2026-06-28T00:00:00Z' }));
   }
   const d = run(p, ['diagnose', '--id', 'evt_a']);
   assert.equal(d.stale, true);
@@ -860,4 +860,40 @@ test('package: the npm files and prepack carry the guide and the field reference
   for (const f of ['index.js', 'profilot-diagnosis-guide.md', 'profilot-field-reference.md']) assert.ok(pkg.files.includes(f), f);
   for (const f of ['profilot-diagnosis-guide.md', 'profilot-field-reference.md', 'LICENSE']) assert.ok(pkg.scripts.prepack.includes(f), f);
   assert.ok(fs.existsSync(path.join(__dirname, '..', 'profilot-field-reference.md')));
+});
+
+// --- 0.8 review fixes ---------------------------------------------------------------------------
+
+test('ids: constructor and non-ASCII markers the package writes are accepted', () => {
+  const p = makeProject([
+    sampleEvent('evt_frame_hitch_Foo..ctor', 'frame_hitch', '2026-06-25T10:00:00Z'),
+    sampleEvent('evt_gc_spike_Über.Update', 'gc_spike', '2026-06-25T10:00:01Z'),
+  ]);
+  assert.equal(run(p, ['diagnose', '--id', 'evt_frame_hitch_Foo..ctor']).eventId, 'evt_frame_hitch_Foo..ctor');
+  assert.equal(run(p, ['diagnose', '--id', 'evt_gc_spike_Über.Update']).eventId, 'evt_gc_spike_Über.Update');
+  assert.equal(run(p, ['diagnose', '--id', '..']).status, 'error');
+  assert.equal(run(p, ['diagnose', '--id', 'evt/../x']).status, 'error');
+});
+
+test('recurrence: a run still in Play does not count as a clean newest run', () => {
+  const p = makeProject([
+    sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z', 'open', '2026-06-25_10-00-00'),
+    sampleEvent('evt_b', 'gc_spike', '2026-06-26T10:00:00Z', 'open', '2026-06-26_10-00-00'),
+  ]);
+  fs.writeFileSync(path.join(runDir(p, '2026-06-26_10-00-00'), 'run.json'), JSON.stringify({ run: '2026-06-26_10-00-00' }));
+  const a = run(p, ['diagnose', '--id', 'evt_a']);
+  assert.equal(a.recurrence.newestRunInProgress, true);
+  assert.equal(a.stale, false); // the newest FINISHED run is the one that caught it
+  assert.equal(a.recurrence.runsSince, 0);
+  assert.equal(run(p, ['diagnose', '--id', 'evt_b']).stale, false);
+});
+
+test('guide: a BOM copy is current; a copy from a newer release says to update the CLI', () => {
+  const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
+  withGuide(p, '﻿' + shippedGuide());
+  assert.equal(run(p, ['status']).versions.guide, 'current');
+  withGuide(p, '<!-- profilot-guide 99.0.0 -->\n# from the future\n');
+  const s = run(p, ['status']);
+  assert.equal(s.versions.guide, 'newer');
+  assert.ok(s.warnings.some((w) => w.includes('newer Profilot than this CLI')));
 });

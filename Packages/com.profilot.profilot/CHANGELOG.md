@@ -72,6 +72,20 @@ easier to use and harder to misuse.
   when the CLI and package versions differ, naming the older side.
 
 ### Fixed
+- Only a capture whose frame matched the trip can turn a fixed problem `regressed` or count it as
+  seen again; an unmatched one is named after a neighbouring frame. Its card and notification say
+  "frame not matched" instead of blaming the method as fact.
+- A regression always alerts, even when another problem was caught on the same frame.
+- The run id survives "Recompile And Continue Playing" (kept in SessionState), so the rest of the
+  run no longer lands in a fallback folder.
+- The CLI accepts the ids the package writes for constructors (`Foo..ctor`) and non-ASCII class
+  names; containment in the store is still enforced.
+- A run still in Play does not count as a clean newest run (`recurrence.newestRunInProgress`).
+- The Setup panel finds a CLI installed through nvm / fnm / Volta, and judges the guide against
+  the CLI that ships it. The CLI reports a guide from a newer release as `newer`; a BOM no longer
+  makes a copy look outdated.
+- Store files are replaced in one step (`File.Replace`), so a read never finds `reviews.json`
+  missing mid-write. Trips still in the channel when Play ends are written too.
 - Frame matching is strict: a profiler frame is the trip's own frame (`frameMatchesTrigger`) only
   if it breaches the trip's threshold itself and is within 25% of the trip's value on the trip's
   metric. A mild hitch used to "match" a normal neighbouring frame, draw-call trips matched on
