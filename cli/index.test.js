@@ -707,3 +707,73 @@ test('pipe: a reader that closes early does not crash the CLI (no EPIPE trace, e
   assert.equal(res.stdout.trim(), '0');
   assert.equal(fs.readFileSync(path.join(p, 'err.txt'), 'utf8'), '');
 });
+
+// --- 0.8: honest version and guide checks ----------------------------------------------------------
+
+const shippedGuide = () => {
+  const packed = path.join(__dirname, 'profilot-diagnosis-guide.md');
+  return fs.readFileSync(fs.existsSync(packed) ? packed : path.join(__dirname, '..', 'profilot-diagnosis-guide.md'), 'utf8');
+};
+
+function withGuide(p, text) {
+  fs.mkdirSync(path.join(p, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(p, '.claude', 'profilot-diagnosis-guide.md'), text);
+}
+
+test('guide: its header names the CLI version (they release together)', () => {
+  assert.match(shippedGuide(), new RegExp(`^<!-- profilot-guide ${require('./package.json').version.replace(/\./g, '\\.')} -->`));
+});
+
+test('guide: a CRLF copy is current, a locally edited one is "edited" (a note, not a warning)', () => {
+  const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
+  fs.writeFileSync(path.join(baseDir(p), 'meta.json'), JSON.stringify({ schemaVersion: '2', packageVersion: require('./package.json').version }));
+  withGuide(p, shippedGuide().replace(/\n/g, '\r\n'));
+  assert.equal(run(p, ['status']).versions.guide, 'current');
+  withGuide(p, shippedGuide() + '\n## Our team notes\n');
+  const s = run(p, ['status']);
+  assert.equal(s.versions.guide, 'edited');
+  assert.equal(s.warnings, undefined);
+  assert.ok(s.notes.some((n) => n.includes('.bak')));
+});
+
+test('guide: a copy from an older release is outdated', () => {
+  const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
+  withGuide(p, '<!-- profilot-guide 0.1.0 -->\n# old\n');
+  assert.equal(run(p, ['status']).versions.guide, 'outdated');
+});
+
+test('status: runs but no meta.json warns that the package predates 0.7', () => {
+  const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
+  const s = run(p, ['status']);
+  assert.equal(s.versions.package, 'unknown');
+  assert.ok(s.warnings.some((w) => w.includes('no meta.json')));
+});
+
+test('status: same schema but a different release is flagged, naming the older side', () => {
+  const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
+  const meta = path.join(baseDir(p), 'meta.json');
+  fs.writeFileSync(meta, JSON.stringify({ schemaVersion: '2', packageVersion: '0.6.9' }));
+  assert.ok(run(p, ['status']).warnings.some((w) => w.includes('Unity package (0.6.9) is older')));
+  fs.writeFileSync(meta, JSON.stringify({ schemaVersion: '2', packageVersion: '99.0.0' }));
+  assert.ok(run(p, ['status']).warnings.some((w) => w.includes('is older than the Unity package (99.0.0)')));
+});
+
+test('init: an edited guide is backed up before it is replaced; line endings alone change nothing', () => {
+  const root = makeUnityProject();
+  const dest = path.join(root, '.claude', 'profilot-diagnosis-guide.md');
+  withGuide(root, shippedGuide().replace(/\n/g, '\r\n'));
+  let r = run(root, ['init', '--path', root, '--no-package']);
+  assert.equal(stepOf(r, 'guide').result, 'unchanged');
+
+  withGuide(root, 'my own notes\n');
+  r = run(root, ['init', '--path', root, '--no-package']);
+  const g = stepOf(r, 'guide');
+  assert.equal(g.result, 'updated');
+  assert.equal(fs.readFileSync(g.backup, 'utf8'), 'my own notes\n');
+  assert.equal(fs.readFileSync(dest, 'utf8'), shippedGuide());
+
+  withGuide(root, 'second edit\n');
+  const g2 = stepOf(run(root, ['init', '--path', root, '--no-package']), 'guide');
+  assert.notEqual(g2.backup, g.backup);
+  assert.equal(fs.readFileSync(g.backup, 'utf8'), 'my own notes\n');
+});

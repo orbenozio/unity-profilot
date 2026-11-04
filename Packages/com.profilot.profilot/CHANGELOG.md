@@ -14,10 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   events are skipped; when everything is muted it says so and lists them. `--id` still serves a
   muted event.
 - `list` events carry `metric`, `value`, `count` and `topMarker`.
+- The guide copy check ignores line endings and tells a locally **edited** copy (a note) from an
+  **outdated** one (a warning). The shipped guide's first line names its release
+  (`<!-- profilot-guide x.y.z -->`).
+- `profilot init` keeps an edited guide as `.bak` (timestamped if one exists) before refreshing it.
 
 ### Added
 - `diagnose --worst`: the costliest open or regressed event of the newest run (or `--run`).
 - `profilot --help` (and bare `profilot`) prints usage; `status`, `runs` and `list` take `--text`.
+- `profilot status` warns when the store has runs but no `meta.json` (a package older than 0.7) and
+  when the CLI and package versions differ, naming the older side.
 
 ### Fixed
 - A reader that closes the pipe early (`| head`) no longer crashes the CLI with an EPIPE trace and

@@ -1,3 +1,4 @@
+<!-- profilot-guide 0.7.0 -->
 # Profilot - performance diagnosis guide for Claude Code
 
 > **What this is.** Profilot's diagnosis guide. `profilot init` copies it into the project's `.claude/` and imports it from CLAUDE.md.

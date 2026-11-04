@@ -359,12 +359,40 @@ function withCompat(rec) {
   };
 }
 
+// The shipped guide's first line names the Profilot version it belongs to, so a copy can be told
+// apart as older ("outdated") or locally edited. Line endings do not count: git can rewrite them.
+const GUIDE_HEADER = /^<!--\s*profilot-guide\s+([0-9][0-9.]*)\s*-->/;
+
+function normalizeText(s) {
+  return s.replace(/\r\n/g, '\n').replace(/\s+$/, '');
+}
+
+function guideVersion(text) {
+  const m = GUIDE_HEADER.exec(text);
+  return m ? m[1] : null;
+}
+
+function compareVersions(a, b) {
+  const pa = String(a).split('.').map(Number);
+  const pb = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+// current | edited (same version, local changes) | outdated (an older guide) | missing | unknown
 function guideState(base) {
   const src = findGuide();
   if (!src || !base) return 'unknown';
   const copy = path.join(path.dirname(path.dirname(base)), '.claude', GUIDE_FILE);
   if (!fs.existsSync(copy)) return 'missing';
-  return fs.readFileSync(copy, 'utf8') === fs.readFileSync(src, 'utf8') ? 'current' : 'outdated';
+  const shipped = fs.readFileSync(src, 'utf8');
+  const local = fs.readFileSync(copy, 'utf8');
+  if (normalizeText(local) === normalizeText(shipped)) return 'current';
+  const v = guideVersion(local);
+  return v && v === guideVersion(shipped) ? 'edited' : 'outdated';
 }
 
 function versions(base) {
@@ -377,21 +405,40 @@ function versions(base) {
       meta = null;
     }
   }
+  const cli = require('./package.json').version;
   const out = {
-    cli: require('./package.json').version,
+    cli,
     package: (meta && meta.packageVersion) || 'unknown',
     schema: { cli: SCHEMA_VERSION, package: meta ? schemaOf(meta) : null },
     guide: guideState(base),
   };
   const warnings = [];
+  const notes = [];
+  const updatePackage = 'Update it: Package Manager > Profilot > Update (or re-resolve the #release dependency).';
   if (out.schema.package != null && out.schema.package > SCHEMA_VERSION) {
     warnings.push('The Unity package writes a newer schema than this CLI reads. Update the CLI: npm install -g profilot');
   } else if (out.schema.package != null && out.schema.package < SCHEMA_VERSION) {
-    warnings.push('The Unity package is older than this CLI. Update it: Package Manager > Profilot > Update (or re-resolve #release).');
+    warnings.push(`The Unity package is older than this CLI. ${updatePackage}`);
+  } else if (meta && out.package !== 'unknown' && compareVersions(out.package, cli) !== 0) {
+    // Same schema, different release. They ship together, so one of them is behind.
+    warnings.push(
+      compareVersions(out.package, cli) < 0
+        ? `The Unity package (${out.package}) is older than the CLI (${cli}). ${updatePackage}`
+        : `The CLI (${cli}) is older than the Unity package (${out.package}). Update it: npm install -g profilot`,
+    );
   }
-  if (out.guide === 'outdated') warnings.push('The project guide copy is out of date. Run `profilot init` to refresh it.');
+  if (!meta && base && listRuns(base).length > 0) {
+    // Every package from 0.7 on writes meta.json when Play starts.
+    warnings.push(`This store has runs but no meta.json, so the Unity package is older than 0.7 (or has not entered Play since it was updated). ${updatePackage}`);
+  }
+  if (out.guide === 'outdated') {
+    warnings.push('The project guide copy is from an older Profilot. Run `profilot init` to refresh it (your copy is kept as a .bak).');
+  }
   if (out.guide === 'missing') warnings.push('The project has no Profilot guide. Run `profilot init`.');
-  return { versions: out, ...(warnings.length ? { warnings } : {}) };
+  if (out.guide === 'edited') {
+    notes.push('The project guide copy has local edits. `profilot init` would replace it and keep your copy as a .bak.');
+  }
+  return { versions: out, ...(warnings.length ? { warnings } : {}), ...(notes.length ? { notes } : {}) };
 }
 
 function cmdStatus(base) {
@@ -680,6 +727,7 @@ function textOf(command, r) {
       `versions cli ${v.cli}, package ${v.package}, guide ${v.guide}`,
     ];
     for (const w of r.warnings || []) lines.push(`warning  ${w}`);
+    for (const n of r.notes || []) lines.push(`note     ${n}`);
     return lines.join('\n');
   }
   if (command === 'runs') {
@@ -752,10 +800,17 @@ function initGuide(root) {
   const dest = path.join(root, '.claude', GUIDE_FILE);
   const content = fs.readFileSync(src, 'utf8');
   const before = fs.existsSync(dest) ? fs.readFileSync(dest, 'utf8') : null;
-  if (before === content) return { step: 'guide', result: 'unchanged', path: dest };
+  if (before !== null && normalizeText(before) === normalizeText(content)) return { step: 'guide', result: 'unchanged', path: dest };
   fs.mkdirSync(path.dirname(dest), { recursive: true });
+  // The copy may carry the user's own edits, so it is kept next to the new one, never lost.
+  let backup;
+  if (before !== null) {
+    backup = `${dest}.bak`;
+    if (fs.existsSync(backup)) backup = `${dest}.${new Date().toISOString().replace(/[:.]/g, '-')}.bak`;
+    fs.writeFileSync(backup, before);
+  }
   fs.writeFileSync(dest, content);
-  return { step: 'guide', result: before === null ? 'added' : 'updated', path: dest };
+  return { step: 'guide', result: before === null ? 'added' : 'updated', path: dest, ...(backup ? { backup } : {}) };
 }
 
 function initClaudeMd(root) {
