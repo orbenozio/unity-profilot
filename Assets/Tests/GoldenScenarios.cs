@@ -67,4 +67,80 @@ namespace Profilot.PlayTests
             _sink += acc;
         }
     }
+
+    /// <summary>
+    /// A MILD, isolated hitch: steady work every frame raises the baseline, and every
+    /// <see cref="everyFrames"/> frames one frame takes about 2.5x as long. This is the common
+    /// case the 0.6 matcher got wrong - a normal neighbouring frame "matched" the trip.
+    /// </summary>
+    public sealed class MildHitchScenario : MonoBehaviour
+    {
+        public int startAfterFrames = 75;
+        public int everyFrames = 30;
+        public double baseMs = 6.0;
+        public double hitchMs = 16.0;
+
+        private int _frame;
+        private double _sink;
+
+        private void Update()
+        {
+            _frame++;
+            bool hitch = _frame >= startAfterFrames && _frame % everyFrames == 0;
+            Burn(hitch ? hitchMs : baseMs);
+        }
+
+        private void Burn(double ms)
+        {
+            double start = Time.realtimeSinceStartupAsDouble;
+            double acc = 0;
+            while (Time.realtimeSinceStartupAsDouble - start < ms / 1000.0)
+                acc += System.Math.Sqrt(acc + 1.0);
+            _sink += acc;
+        }
+    }
+
+    /// <summary>
+    /// A draw-call spike: after <see cref="startAfterFrames"/> frames, a burst of renderers with
+    /// their own materials (so nothing batches) appears for a few frames, then hides again.
+    /// Only meaningful where the player loop renders; headless runs may not draw at all.
+    /// </summary>
+    public sealed class DrawCallSpikeScenario : MonoBehaviour
+    {
+        public int startAfterFrames = 90;
+        public int burstFrames = 4;
+        public int renderers = 400;
+
+        private int _frame;
+        private GameObject[] _objects;
+
+        private void Start()
+        {
+            var cam = new GameObject("draw-call-camera").AddComponent<Camera>();
+            cam.transform.SetParent(transform);
+            cam.transform.position = new Vector3(0, 0, -30);
+
+            Shader shader = Shader.Find("Universal Render Pipeline/Unlit") ?? Shader.Find("Unlit/Color") ?? Shader.Find("Standard");
+            _objects = new GameObject[renderers];
+            for (int i = 0; i < renderers; i++)
+            {
+                GameObject go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                go.transform.SetParent(transform);
+                go.transform.position = new Vector3((i % 20) - 10, (i / 20) - 10, 0);
+                var mat = new Material(shader) { color = new Color(i / (float)renderers, 0.5f, 0.5f) };
+                go.GetComponent<Renderer>().sharedMaterial = mat;
+                go.SetActive(false);
+                _objects[i] = go;
+            }
+        }
+
+        private void Update()
+        {
+            _frame++;
+            bool on = _frame >= startAfterFrames && _frame < startAfterFrames + burstFrames;
+            foreach (GameObject go in _objects)
+                if (go.activeSelf != on)
+                    go.SetActive(on);
+        }
+    }
 }

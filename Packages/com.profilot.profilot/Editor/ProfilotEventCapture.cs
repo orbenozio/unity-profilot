@@ -49,11 +49,10 @@ namespace Profilot.Editor
         // How many recent profiler frames to scan when correlating a trip to its frame.
         // ProfilerDriver counts editor frames too, so its lastFrameIndex is not the frame
         // that tripped; we drain on the next editor update, so the real frame is only a few
-        // back. We pick by signal (the frame whose GC alloc / time matches the trigger),
-        // not by index, which is robust to that offset (SPEC.md section 15, ring buffer).
-        // Each scanned frame builds a HierarchyFrameDataView, so this is the per-trip cost -
-        // kept small (the observed frameIndexDelta is well under this) so a trip is cheap and
-        // does not produce a periodic capture hitch.
+        // back. We pick by signal (the frame whose counters match the trigger), not by index,
+        // which is robust to that offset (SPEC.md section 15, ring buffer). Scanning reads
+        // counters through a RawFrameDataView, cached per frame and shared by every pending
+        // trip; the expensive hierarchy view is built once, for the chosen frame only.
         private const int FrameSearchWindow = 10;
 
         private static readonly List<TripSignal> Buffer = new List<TripSignal>();
@@ -361,6 +360,17 @@ namespace Profilot.Editor
         {
             if (change == PlayModeStateChange.ExitingPlayMode)
             {
+                // A trip from the last moments of the run is still waiting for its frame: write
+                // it with the best frame seen so far instead of dropping it.
+                bool deepNow = Profiler.enabled;
+                foreach (PendingCapture p in PendingCaptures)
+                {
+                    try { Flush(p, deepNow); }
+                    catch (Exception e) { Debug.LogWarning($"[Profilot] Could not write a pending event on exit: {e.Message}"); }
+                }
+                PendingCaptures.Clear();
+                FrameCache.Clear();
+
                 if (_reviewsDirty)
                 {
                     SaveReviews();
@@ -411,6 +421,8 @@ namespace Profilot.Editor
 
             ProfilotTripChannel.Clear();
             PendingCaptures.Clear();
+            FrameCache.Clear();
+            _lastNotifiedFrame = -1;
             Dedup.Clear();
             // Reviewed is NOT cleared - review decisions persist across sessions (loaded from
             // disk in the static ctor, saved on every change), so a muted problem stays muted.
@@ -424,6 +436,7 @@ namespace Profilot.Editor
         private sealed class PendingCapture
         {
             public TripSignal Signal;
+            public int RequestedFrameIndex;
             public int Updates;
             public int ScannedTo = -1;
             public int Best = -1;
@@ -442,10 +455,13 @@ namespace Profilot.Editor
             Buffer.Clear();
             ProfilotTripChannel.Drain(Buffer);
             foreach (TripSignal signal in Buffer)
-                PendingCaptures.Add(new PendingCapture { Signal = signal });
+                PendingCaptures.Add(new PendingCapture { Signal = signal, RequestedFrameIndex = ProfilerDriver.lastFrameIndex });
 
             if (PendingCaptures.Count == 0)
+            {
+                FrameCache.Clear();
                 return;
+            }
 
             // Only scan frames when deep capture is armed. Otherwise this is the cheap
             // counter-only path: no profiler recording, no marker tree, no per-trip cost - just
@@ -462,14 +478,23 @@ namespace Profilot.Editor
                 }
 
                 PendingCaptures.RemoveAt(i--);
-                Capture(p.Signal, deep && p.Best >= 0 ? p.Best : ProfilerDriver.lastFrameIndex, deep && p.Matched);
+                Flush(p, deep);
             }
         }
 
-        private static void Capture(in TripSignal signal, int frameIndex, bool frameMatches)
+        private static void Flush(PendingCapture p, bool deep)
+        {
+            Capture(p.Signal, deep && p.Best >= 0 ? p.Best : ProfilerDriver.lastFrameIndex, deep && p.Matched,
+                p.RequestedFrameIndex);
+        }
+
+        // One bad frame can trip several types (a load frame is both a hitch and a GC spike).
+        // Each still gets its record, but the user is told once.
+        private static int _lastNotifiedFrame = -1;
+
+        private static void Capture(in TripSignal signal, int frameIndex, bool frameMatches, int requestedFrameIndex)
         {
             bool deep = Profiler.enabled;
-            int requestedFrameIndex = ProfilerDriver.lastFrameIndex;
 
             // Fetch + normalize first: the dominant marker is part of the dedup key.
             string markerTreeJson = "null";
@@ -558,8 +583,11 @@ namespace Profilot.Editor
             // session (repeats already fold into the dedup count), never per frame, no LLM, and
             // never for a problem the user has muted via Fixed / Ignore. A fixed problem that came
             // back worse alerts once more, on the transition.
-            if (regressed || (isNewProblem && !IsMuted(eventId)))
+            if ((regressed || (isNewProblem && !IsMuted(eventId))) && signal.FrameCount != _lastNotifiedFrame)
+            {
+                _lastNotifiedFrame = signal.FrameCount;
                 ProfilotNotifier.OnProblemCaught(eventId, signal.Type, dominantMarker, acc.Count, regressed);
+            }
         }
 
         /// <summary>
@@ -613,32 +641,124 @@ namespace Profilot.Editor
             return string.Empty;
         }
 
-        // A scanned frame whose primary metric is within this relative distance of the trip's
-        // value is taken as the trip's own frame (frameMatchesTrigger in the record).
-        private const double FrameMatchTolerance = 0.5;
+        // A scanned frame is the trip's own frame (frameMatchesTrigger) only when it breaches
+        // the trip's own rule AND its primary metric is within this relative distance of the
+        // trip's value. Distance alone was not enough: at 0.5 a 15 ms trip "matched" a normal
+        // 8 ms neighbour, and draw-call trips matched on frame time, which a draw-call spike
+        // barely moves.
+        internal const double FrameMatchTolerance = 0.25;
 
-        // The tripwire's "GC Allocated In Frame" counter also counts what the Editor itself
-        // allocates around the player loop (~15 KB a frame), which the captured frame's tree does
-        // not include. Differences up to this much are treated as that offset, not a mismatch -
-        // otherwise every small leak looked like a different frame.
+        // When the GC counter is not readable from the profiler frame, the hierarchy root's GC
+        // column is the fallback. The tripwire's counter also counts what the Editor allocates
+        // around the player loop (~15 KB a frame), which the tree does not include, so that
+        // much difference is allowed - but never more than half the trip itself, or every small
+        // leak "matched" whichever frame came first.
         private const double GcMatchSlackBytes = 64 * 1024;
 
         // |a - b| beyond `slack`, relative to the larger of the two: 0 = equal, 1 = far apart.
-        private static double RelDistance(double a, double b, double slack = 0.0)
+        internal static double RelDistance(double a, double b, double slack = 0.0)
         {
             double m = Math.Max(Math.Abs(a), Math.Abs(b));
             return m < 1e-9 ? 0.0 : Math.Max(0.0, Math.Abs(a - b) - slack) / m;
         }
 
+        internal static double GcSlack(double tripBytes) => Math.Min(GcMatchSlackBytes, 0.5 * Math.Abs(tripBytes));
+
+        /// <summary>The counters of one profiler frame. Gc / Draws are -1 when unreadable;
+        /// GcFromCounter says whether Gc is the same counter the tripwire reads (exact) or
+        /// the hierarchy root (needs slack).</summary>
+        internal struct FrameStats
+        {
+            public bool Valid;
+            public double FrameMs;
+            public double Gc;
+            public bool GcFromCounter;
+            public double Draws;
+        }
+
+        /// <summary>
+        /// Whether a frame is the one that tripped: it must breach the trip's own rule, and its
+        /// primary metric must be close to the trip's value. `distance` ranks candidates (primary
+        /// plus a quarter of the other metric). Pure, so it is unit-tested.
+        /// </summary>
+        internal static bool MatchFrame(in TripSignal sig, in FrameStats st, out double distance)
+        {
+            double timeDistance = RelDistance(st.FrameMs, sig.FrameTimeMs);
+            double gcDistance = st.Gc < 0
+                ? 1.0
+                : RelDistance(st.Gc, sig.GcAllocBytes, st.GcFromCounter ? 0.0 : GcSlack(sig.GcAllocBytes));
+
+            double primary;
+            bool breach;
+            switch (sig.Type)
+            {
+                case "gc_spike":
+                    primary = gcDistance;
+                    breach = st.Gc > sig.Budget;
+                    distance = primary + 0.25 * timeDistance;
+                    break;
+                case "draw_calls":
+                    primary = st.Draws < 0 ? 1.0 : RelDistance(st.Draws, sig.DrawCalls);
+                    breach = st.Draws > sig.Budget;
+                    distance = primary + 0.25 * timeDistance;
+                    break;
+                default: // frame_hitch
+                    primary = timeDistance;
+                    breach = st.FrameMs >= sig.Budget;
+                    distance = primary + 0.25 * gcDistance;
+                    break;
+            }
+            return st.Valid && breach && primary <= FrameMatchTolerance;
+        }
+
+        // Counters per profiler frame, shared by every pending trip, cleared when nothing waits.
+        private static readonly Dictionary<int, FrameStats> FrameCache = new Dictionary<int, FrameStats>();
+
+        private static FrameStats StatsOf(int frame)
+        {
+            if (FrameCache.TryGetValue(frame, out FrameStats st))
+                return st;
+
+            st = new FrameStats { Gc = -1, Draws = -1 };
+            using (RawFrameDataView raw = ProfilerDriver.GetRawFrameDataView(frame, 0))
+            {
+                if (raw != null && raw.valid)
+                {
+                    st.Valid = true;
+                    st.FrameMs = raw.frameTimeMs;
+                    int gcId = raw.GetMarkerId("GC Allocated In Frame");
+                    if (gcId != FrameDataView.invalidMarkerId)
+                    {
+                        st.Gc = raw.GetCounterValueAsLong(gcId);
+                        st.GcFromCounter = true;
+                    }
+                    int drawId = raw.GetMarkerId("Draw Calls Count");
+                    if (drawId != FrameDataView.invalidMarkerId)
+                        st.Draws = raw.GetCounterValueAsInt(drawId);
+                }
+            }
+
+            if (st.Valid && st.Gc < 0)
+            {
+                using (HierarchyFrameDataView view = ProfilerDriver.GetHierarchyFrameDataView(
+                           frame, 0, HierarchyFrameDataView.ViewModes.MergeSamplesWithTheSameName,
+                           HierarchyFrameDataView.columnTotalTime, false))
+                {
+                    if (view != null && view.valid)
+                        st.Gc = view.GetItemColumnDataAsFloat(view.GetRootItemID(), HierarchyFrameDataView.columnGcMemory);
+                }
+            }
+
+            FrameCache[frame] = st;
+            return st;
+        }
+
         /// <summary>
         /// Looks for the frame that tripped among the profiler frames that arrived since the last
-        /// look (the first look also covers the FrameSearchWindow before it). Keeps the frame
-        /// whose counters are CLOSEST to the trip's snapshot - GC allocation first for gc_spike,
-        /// frame time first otherwise, the other as a tiebreaker. This correlates the runtime trip
-        /// to its profiler frame despite the editor/player frame-index offset. It used to pick the
-        /// LARGEST frame in the window instead, so a 14 ms / 1.2 MB trip came back with the tree
-        /// of a neighbouring 480 ms / 121 MB load frame - wrong marker, wrong event id, wrong
-        /// dedup key.
+        /// look (the first look also covers the FrameSearchWindow before it). A frame that matches
+        /// (see MatchFrame) always beats one that does not; among equals the closest wins. When
+        /// nothing matches by the deadline the closest frame is written with
+        /// frameMatchesTrigger false, so the record says the tree may be a neighbour's.
         /// </summary>
         private static void ScanNewFrames(PendingCapture p)
         {
@@ -651,32 +771,20 @@ namespace Profilot.Editor
             from = Mathf.Max(first, from);
             p.ScannedTo = latest;
 
-            bool byAlloc = p.Signal.Type == "gc_spike";
             for (int f = latest; f >= from; f--)
             {
-                HierarchyFrameDataView view = ProfilerDriver.GetHierarchyFrameDataView(
-                    f, 0, HierarchyFrameDataView.ViewModes.MergeSamplesWithTheSameName,
-                    HierarchyFrameDataView.columnTotalTime, false);
-                try
+                FrameStats st = StatsOf(f);
+                if (!st.Valid)
+                    continue;
+                bool matches = MatchFrame(p.Signal, st, out double distance);
+                bool better = matches
+                    ? !p.Matched || distance < p.BestDistance
+                    : !p.Matched && distance < p.BestDistance;
+                if (better)
                 {
-                    if (view == null || !view.valid)
-                        continue;
-
-                    double gc = view.GetItemColumnDataAsFloat(view.GetRootItemID(), HierarchyFrameDataView.columnGcMemory);
-                    double gcDistance = RelDistance(gc, p.Signal.GcAllocBytes, GcMatchSlackBytes);
-                    double timeDistance = RelDistance(view.frameTimeMs, p.Signal.FrameTimeMs);
-                    double primary = byAlloc ? gcDistance : timeDistance;
-                    double distance = primary + 0.25 * (byAlloc ? timeDistance : gcDistance);
-                    if (distance < p.BestDistance)
-                    {
-                        p.BestDistance = distance;
-                        p.Best = f;
-                        p.Matched = primary <= FrameMatchTolerance;
-                    }
-                }
-                finally
-                {
-                    view?.Dispose();
+                    p.Best = f;
+                    p.BestDistance = distance;
+                    p.Matched = matches;
                 }
             }
         }

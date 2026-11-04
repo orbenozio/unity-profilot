@@ -45,6 +45,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the CLI and package versions differ, naming the older side.
 
 ### Fixed
+- Frame matching is strict: a profiler frame is the trip's own frame (`frameMatchesTrigger`) only
+  if it breaches the trip's threshold itself and is within 25% of the trip's value on the trip's
+  metric. A mild hitch used to "match" a normal neighbouring frame, draw-call trips matched on
+  frame time, and any gc_spike under 64 KB matched the first frame scanned.
+- Draw-call trips are matched on the frame's `Draw Calls Count` counter; GC trips on the frame's
+  `GC Allocated In Frame` counter, the same one the tripwire reads (the hierarchy root, with slack
+  capped at half the trip, is only the fallback).
+- One bad frame that trips several types (a load frame is a hitch and a GC spike) notifies once.
+- Frames are scanned once through a cached `RawFrameDataView` shared by every pending trip; the
+  hierarchy view is built only for the chosen frame.
+- A trip still waiting for its frame when Play ends is written with the best frame seen, not
+  dropped. `frameIndexDelta` is measured from when the trip was drained, not when it was written.
 - A reader that closes the pipe early (`| head`) no longer crashes the CLI with an EPIPE trace and
   exit 1 (a regression from the 0.6 pipe fix).
 - `--id` and `--run` are checked as names and must resolve inside the store (`--id ../../reviews`

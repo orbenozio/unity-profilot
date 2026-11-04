@@ -118,5 +118,97 @@ namespace Profilot.PlayTests
             Assert.IsTrue(CaughtAndMapped("SyncHitchScenario.Update", "frame_hitch"),
                 "expected a frame_hitch event whose dominant marker is SyncHitchScenario.Update (M5 recall + M3 mapping)");
         }
+
+        // The 0.8 match rule as an invariant over every captured record: a record that claims
+        // its frame matches the trip must hold a frame that breaches the trip's own threshold.
+        private static void AssertMatchedHitchesBreach()
+        {
+            foreach (string file in AllEventFiles())
+            {
+                string json = File.ReadAllText(file);
+                if (!json.Contains("\"type\":\"frame_hitch\"") || !json.Contains("\"frameMatchesTrigger\":true"))
+                    continue;
+                double captured = NumberAfter(json, "\"capturedFrameTimeMs\":");
+                double budget = NumberAfter(json, "\"budget\":");
+                Assert.GreaterOrEqual(captured, budget,
+                    $"{Path.GetFileName(file)} claims frameMatchesTrigger but its frame ({captured} ms) is under the trip threshold ({budget} ms)");
+            }
+        }
+
+        private static double NumberAfter(string json, string key)
+        {
+            int i = json.IndexOf(key, System.StringComparison.Ordinal);
+            Assert.GreaterOrEqual(i, 0, $"{key} missing");
+            i += key.Length;
+            int j = i;
+            while (j < json.Length && "-+.0123456789eE".IndexOf(json[j]) >= 0)
+                j++;
+            return double.Parse(json.Substring(i, j - i), System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        [UnityTest]
+        public IEnumerator MildHitch_is_captured_on_its_own_frame()
+        {
+            ClearStore();
+            ArmProfilot();
+
+            var go = new GameObject("mild-hitch-scenario");
+            go.AddComponent<MildHitchScenario>();
+
+            for (int i = 0; i < 260; i++)
+                yield return null;
+
+            Object.Destroy(go);
+            yield return null;
+
+            Assert.IsTrue(CaughtAndMapped("MildHitchScenario.Update", "frame_hitch"),
+                "expected a frame_hitch event whose dominant marker is MildHitchScenario.Update");
+
+            bool anyMatched = false;
+            foreach (string file in AllEventFiles())
+            {
+                string json = File.ReadAllText(file);
+                if (json.Contains("\"eventId\":\"evt_frame_hitch_MildHitchScenario.Update") && json.Contains("\"frameMatchesTrigger\":true"))
+                    anyMatched = true;
+            }
+            Assert.IsTrue(anyMatched, "the mild hitch was captured, but never on a frame that matches the trip");
+            AssertMatchedHitchesBreach();
+        }
+
+        [UnityTest]
+        public IEnumerator DrawCallSpike_is_caught_and_matched_on_the_draw_counter()
+        {
+            ClearStore();
+            ArmProfilot();
+
+            var go = new GameObject("draw-call-scenario");
+            go.AddComponent<DrawCallSpikeScenario>();
+
+            var draws = Unity.Profiling.ProfilerRecorder.StartNew(Unity.Profiling.ProfilerCategory.Render, "Draw Calls Count", 1);
+            double maxDraws = 0;
+            for (int i = 0; i < 200; i++)
+            {
+                yield return null;
+                if (draws.Valid)
+                    maxDraws = System.Math.Max(maxDraws, draws.LastValue);
+            }
+            draws.Dispose();
+
+            Object.Destroy(go);
+            yield return null;
+
+            if (maxDraws < 100)
+                Assert.Inconclusive($"This run did not render (max {maxDraws} draw calls a frame), so a draw-call spike cannot happen. Run it in the Editor with graphics.");
+
+            string record = null;
+            foreach (string file in AllEventFiles())
+            {
+                string json = File.ReadAllText(file);
+                if (json.Contains("\"type\":\"draw_calls\""))
+                    record = json;
+            }
+            Assert.IsNotNull(record, $"no draw_calls event (max {maxDraws} draw calls a frame)");
+            Assert.IsTrue(record.Contains("\"frameMatchesTrigger\":true"), "the draw_calls event was not matched to its frame");
+        }
     }
 }
