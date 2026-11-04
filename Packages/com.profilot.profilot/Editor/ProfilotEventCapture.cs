@@ -572,8 +572,16 @@ namespace Profilot.Editor
                 (string.IsNullOrEmpty(dominantMarker) || (frameMs > 0f && cpuMs < frameMs * OffCpuFraction)))
                 return;
 
+            // Only a capture whose frame matched the trip is attributed to its marker: an unmatched
+            // one is named after a neighbouring frame, so it must not change a decision ("regressed",
+            // seen again), raise a problem's peak, or - for a problem the user already decided on -
+            // be written under that problem's id, where the CLI would read it as "still happening".
+            bool attributed = !deep || frameMatches;
+
             // Stable id per problem (type + dominant marker) so repeats overwrite one file.
             string eventId = $"evt_{signal.Type}_{Slug(dominantMarker)}";
+            if (!attributed && Reviewed.ContainsKey(eventId))
+                eventId = $"evt_{signal.Type}_unmatched";
 
             bool isNewProblem = !Dedup.TryGetValue(eventId, out Accumulator acc);
             if (isNewProblem)
@@ -582,13 +590,10 @@ namespace Profilot.Editor
                 Dedup[eventId] = acc;
             }
             acc.Count += signal.RepeatCount + 1;
-            acc.Peak = Math.Max(acc.Peak, signal.Value);
+            if (attributed)
+                acc.Peak = Math.Max(acc.Peak, signal.Value);
 
-            // Before the record is built, so it already carries "regressed". Only a capture whose
-            // frame matched the trip may change a decision: an unmatched one is named after a
-            // neighbouring frame's marker, so it could flip some other fixed problem to
-            // "regressed" or count it as seen again with a value that was never its own.
-            bool attributed = !deep || frameMatches;
+            // Before the record is built, so it already carries "regressed".
             bool regressed = attributed && CheckRegression(eventId, signal.Value);
             if (attributed && !regressed)
                 NoteSeenAgain(eventId, signal);

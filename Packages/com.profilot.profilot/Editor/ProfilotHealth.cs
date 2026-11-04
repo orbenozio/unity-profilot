@@ -82,8 +82,14 @@ namespace Profilot.Editor
             // The CLI ships the guide, so a guide is current when it matches the CLI that would
             // refresh it (a CLI-only patch release must not make `profilot init` look broken).
             if (r.GuideVersion != null && r.CliVersion != null)
-                r.GuideState = r.GuideVersion == r.CliVersion ? "current" : "outdated";
+                r.GuideState = r.GuideVersion == r.CliVersion ? "current"
+                    : Newer(r.GuideVersion, r.CliVersion) ? "newer" : "outdated";
             return r;
+        }
+
+        private static bool Newer(string a, string b)
+        {
+            return Version.TryParse(a, out Version va) && Version.TryParse(b, out Version vb) && va > vb;
         }
 
         // Unity started from the Hub does not inherit the terminal's PATH (no /opt/homebrew/bin on

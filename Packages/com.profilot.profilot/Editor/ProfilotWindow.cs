@@ -612,9 +612,10 @@ namespace Profilot.Editor
             Line(h.CliFound, h.CliFound ? $"profilot CLI {h.CliVersion}" : "profilot CLI not found on the PATH");
             if (h.VersionsDrift)
                 Line(false, $"CLI {h.CliVersion} and package {h.PackageVersion} differ - update the older one");
-            Line(h.GuideState == "current", h.GuideState == "current"
-                ? "Guide for Claude Code in .claude/"
-                : h.GuideState == "missing" ? "No guide in .claude/ - run profilot init" : "The guide in .claude/ is outdated - run profilot init");
+            Line(h.GuideState == "current", h.GuideState == "current" ? "Guide for Claude Code in .claude/"
+                : h.GuideState == "missing" ? "No guide in .claude/ - run profilot init"
+                : h.GuideState == "newer" ? "The guide in .claude/ is newer than the CLI - update the CLI (npm install -g profilot)"
+                : "The guide in .claude/ is outdated - run profilot init");
             Line(h.ClaudeMdImports, h.ClaudeMdImports ? "CLAUDE.md imports the guide" : "CLAUDE.md does not import the guide - run profilot init");
 
             if (!h.Healthy)

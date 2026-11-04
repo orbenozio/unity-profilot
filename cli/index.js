@@ -186,16 +186,21 @@ function storeContext(base) {
 // Recurrence is per EVENT, not per record: "is this problem still happening?" is answered by the
 // newest run that caught it. Since 0.8 every Play leaves a run folder, so a clean run counts as
 // the newest run and an event missing from it really did not come back.
+// The run "is it still happening?" is judged against. Caught in the run still in Play: that run.
+// Not caught there yet: the newest finished run, because the open run is not a clean one yet.
+function recurrenceReference(ctx, lastSeenRun) {
+  return ctx.newestInProgress && lastSeenRun !== ctx.newestRun && ctx.runs.length > 1 ? ctx.runs[1] : ctx.newestRun;
+}
+
 function recurrence(eventId, ctx) {
   const seen = ctx.seenIn.get(eventId) || [];
   const lastSeenRun = seen[0];
   const idx = lastSeenRun ? ctx.runs.indexOf(lastSeenRun) : -1;
-  // Caught in the run still in progress: current. Not caught there yet: judge by the newest
-  // finished run instead, and do not count the open run as a clean one.
-  const reference = ctx.newestInProgress && lastSeenRun !== ctx.newestRun ? ctx.runs[1] : ctx.newestRun;
+  const reference = recurrenceReference(ctx, lastSeenRun);
   return {
     lastSeenRun,
     newestRun: ctx.newestRun,
+    comparedToRun: reference,
     ...(ctx.newestInProgress ? { newestRunInProgress: true } : {}),
     seenInNewestRun: !!lastSeenRun && lastSeenRun === reference,
     runsSeen: seen.length,
@@ -379,9 +384,11 @@ function shapeTree(rec, opts) {
 // A record served from a run that is NOT the newest one. This is the silent trap: `diagnose --id X`
 // falls back to the newest run that still CONTAINS X, so once a fix lands and the event stops being
 // captured, you keep reading the old run's numbers and conclude "no change". Say so, loudly.
-function runFallback(rec, resolvedRun, runs) {
+function runFallback(rec, resolvedRun, ctx) {
+  const runs = ctx.runs;
   const latestRun = runs[0];
-  if (!rec || !latestRun || resolvedRun === latestRun) return rec;
+  // While the newest run is still in Play, the newest finished run is the fair comparison.
+  if (!rec || !latestRun || resolvedRun === latestRun || resolvedRun === recurrenceReference(ctx, resolvedRun)) return rec;
   const newer = runs.indexOf(resolvedRun);
   return {
     ...rec,
@@ -639,7 +646,7 @@ function diagnoseFile(file, run, ctx, opts, pinned) {
   const runs = ctx.runs;
   // Only warn on an IMPLICIT fallback. With --run the caller chose the run, so an older one is
   // the answer they asked for, not a surprise.
-  return shapeTree(withCompat(pinned ? rec : runFallback(rec, run, runs)), opts);
+  return shapeTree(withCompat(pinned ? rec : runFallback(rec, run, ctx)), opts);
 }
 
 // --last: the most recently captured event that still needs a look (open or regressed). Fixed and

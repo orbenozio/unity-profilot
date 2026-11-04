@@ -526,6 +526,7 @@ test('stale is per event: a record pinned to an older run is not stale if the pr
   assert.deepEqual(pinned.recurrence, {
     lastSeenRun: '2026-06-26_10-00-00',
     newestRun: '2026-06-26_10-00-00',
+    comparedToRun: '2026-06-26_10-00-00',
     seenInNewestRun: true,
     runsSeen: 2,
     runsSince: 0,
@@ -885,6 +886,8 @@ test('recurrence: a run still in Play does not count as a clean newest run', () 
   assert.equal(a.recurrence.newestRunInProgress, true);
   assert.equal(a.stale, false); // the newest FINISHED run is the one that caught it
   assert.equal(a.recurrence.runsSince, 0);
+  assert.equal(a.recurrence.comparedToRun, '2026-06-25_10-00-00');
+  assert.equal(a.runFallback, undefined); // no "stopped reproducing" warning next to stale: false
   assert.equal(run(p, ['diagnose', '--id', 'evt_b']).stale, false);
 });
 

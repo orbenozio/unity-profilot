@@ -72,15 +72,19 @@ easier to use and harder to misuse.
   when the CLI and package versions differ, naming the older side.
 
 ### Fixed
-- Only a capture whose frame matched the trip can turn a fixed problem `regressed` or count it as
-  seen again; an unmatched one is named after a neighbouring frame. Its card and notification say
-  "frame not matched" instead of blaming the method as fact.
+- Only a capture whose frame matched the trip can turn a fixed problem `regressed`, count it as
+  seen again or raise its peak; an unmatched one is named after a neighbouring frame. If that
+  neighbour is a problem you already marked, the capture is written as `evt_<type>_unmatched`
+  instead, so the CLI does not read it as "still happening". Its card and notification say "frame
+  not matched" instead of blaming the method as fact.
 - A regression always alerts, even when another problem was caught on the same frame.
 - The run id survives "Recompile And Continue Playing" (kept in SessionState), so the rest of the
   run no longer lands in a fallback folder.
 - The CLI accepts the ids the package writes for constructors (`Foo..ctor`) and non-ASCII class
   names; containment in the store is still enforced.
-- A run still in Play does not count as a clean newest run (`recurrence.newestRunInProgress`).
+- A run still in Play does not count as a clean newest run: recurrence is judged against the newest
+  finished run (`recurrence.newestRunInProgress`, `comparedToRun`), with no "stopped reproducing"
+  warning.
 - The Setup panel finds a CLI installed through nvm / fnm / Volta, and judges the guide against
   the CLI that ships it. The CLI reports a guide from a newer release as `newer`; a BOM no longer
   makes a copy look outdated.
