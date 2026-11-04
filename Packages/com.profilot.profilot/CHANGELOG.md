@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- CLI arguments are strict: an unknown option, a positional argument (`diagnose evt_x`), a missing
+  value or an unknown `--run` is an error with the valid choices, never a silent fall back to the
+  latest event. `--flag=value` works like `--flag value`.
+- `diagnose --last` (the default) returns the newest open or regressed event. Fixed and ignored
+  events are skipped; when everything is muted it says so and lists them. `--id` still serves a
+  muted event.
+- `list` events carry `metric`, `value`, `count` and `topMarker`.
+
+### Added
+- `diagnose --worst`: the costliest open or regressed event of the newest run (or `--run`).
+- `profilot --help` (and bare `profilot`) prints usage; `status`, `runs` and `list` take `--text`.
+
+### Fixed
+- A reader that closes the pipe early (`| head`) no longer crashes the CLI with an EPIPE trace and
+  exit 1 (a regression from the 0.6 pipe fix).
+- `--id` and `--run` are checked as names and must resolve inside the store (`--id ../../reviews`
+  returned reviews.json).
+- A run folder that is not a timestamp (an old "session" folder) no longer sorts as the newest run.
+
 ## [0.7.0] - 2026-11-03
 
 Fixes the remaining blocking items B-5 to B-9 from the 2026-11-03 team review. The CLI and the

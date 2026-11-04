@@ -21,6 +21,14 @@ function print(obj) {
   process.stdout.write(JSON.stringify(obj, null, 2) + '\n');
 }
 
+// A reader that closes the pipe early (`| head`) makes the next write fail with EPIPE. Without a
+// handler Node throws it as an unhandled 'error' event (stack trace, exit 1), which breaks the
+// "every command exits 0" contract. The reader is gone, so there is nothing left to tell it.
+process.stdout.on('error', (e) => {
+  if (e && e.code === 'EPIPE') return;
+  throw e;
+});
+
 // Resolve Library/Profilot (holds runs/, latest.json, reviews.json).
 function findBase() {
   if (process.env.PROFILOT_PROJECT) {
@@ -45,15 +53,20 @@ function runsRoot(base) {
   return path.join(base, 'runs');
 }
 
-// Run ids, newest first (folder names are yyyy-MM-dd_HH-mm-ss, so a string sort is chronological).
+// Run folders are named yyyy-MM-dd_HH-mm-ss, so a string sort is chronological.
+const RUN_PATTERN = /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$/;
+
+// Run ids, newest first. A folder with any other name (a domain reload once wrote into "session")
+// would sort above every dated run and pose as the newest one, so those go last, never first.
 function listRuns(base) {
   const root = runsRoot(base);
   if (!fs.existsSync(root)) return [];
-  return fs
+  const desc = (a, b) => (a < b ? 1 : a > b ? -1 : 0);
+  const names = fs
     .readdirSync(root, { withFileTypes: true })
     .filter((d) => d.isDirectory())
-    .map((d) => d.name)
-    .sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+    .map((d) => d.name);
+  return names.filter((n) => RUN_PATTERN.test(n)).sort(desc).concat(names.filter((n) => !RUN_PATTERN.test(n)).sort(desc));
 }
 
 function runEventFiles(base, run) {
@@ -62,6 +75,36 @@ function runEventFiles(base, run) {
   return fs
     .readdirSync(dir)
     .filter((f) => f.startsWith('evt_') && f.endsWith('.json') && !f.endsWith('.tmp'));
+}
+
+// --id and --run end up in a filesystem path, so they are checked as names first and the joined
+// path must stay inside the store: `--id ../../reviews` used to return reviews.json as an event.
+const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+function validName(s) {
+  return typeof s === 'string' && NAME_PATTERN.test(s) && !s.includes('..');
+}
+
+function inside(root, file) {
+  const r = path.resolve(root);
+  const f = path.resolve(file);
+  return f.startsWith(r + path.sep);
+}
+
+function checkId(id) {
+  const bare = id.endsWith('.json') ? id.slice(0, -5) : id;
+  if (validName(bare)) return null;
+  return `Invalid --id "${id}": event ids look like evt_<type>_<marker> (letters, digits, ".", "_", "-").`;
+}
+
+function checkRun(base, run) {
+  const runs = base ? listRuns(base) : [];
+  if (validName(run) && runs.includes(run)) return null;
+  return {
+    status: 'error',
+    message: `No run "${run}".` + (runs.length ? ' Pick one of "runs" (newest first).' : ' There are no runs yet.'),
+    runs: runs.slice(0, 20),
+  };
 }
 
 // Before 0.7 the review buttons wrote "reviewed" / "not_a_real_issue"; the package maps them to
@@ -98,6 +141,10 @@ function summarize(rec, run, reviews, latestRun) {
     stale: !!latestRun && run !== latestRun,
     type: trigger.type,
     severity: trigger.severity,
+    metric: trigger.metric,
+    value: trigger.value,
+    count: rec.dedup ? rec.dedup.count : undefined,
+    topMarker: Array.isArray(rec.topMarkers) && rec.topMarkers[0] ? rec.topMarkers[0].name : undefined,
     capturedAt: rec.capturedAt,
     reviewStatus: reviews[rec.eventId] || rec.reviewStatus || 'open',
     sessionId: rec.sessionId,
@@ -380,6 +427,10 @@ function cmdRuns(base) {
 
 function cmdList(base, runFilter) {
   if (!base) return cmdStatus(base);
+  if (runFilter) {
+    const bad = checkRun(base, runFilter);
+    if (bad) return bad;
+  }
   const reviews = reviewMap(base);
   const allRuns = listRuns(base);
   const runs = runFilter ? [runFilter] : allRuns;
@@ -397,48 +448,119 @@ function cmdList(base, runFilter) {
   return { status: 'ok', count: events.length, events };
 }
 
-function cmdDiagnoseLast(base, opts) {
+// Every readable event in `runs`, as summaries plus where its file is.
+function collectEvents(base, runs, reviews, latestRun) {
+  const out = [];
+  for (const r of runs) {
+    for (const f of runEventFiles(base, r)) {
+      const file = path.join(runsRoot(base), r, f);
+      try {
+        out.push({ ...summarize(readJson(file), r, reviews, latestRun), file });
+      } catch (_) {
+        // skip a half-written or malformed file
+      }
+    }
+  }
+  return out;
+}
+
+const ACTIVE = new Set(['open', 'regressed']);
+const SEVERITY_RANK = { high: 3, medium: 2, low: 1 };
+
+// Nothing open to pick: say what is muted instead of handing back a record the guide tells
+// Claude to skip.
+function nothingOpen(where, muted) {
+  return {
+    status: 'no_data',
+    message:
+      `No open or regressed events ${where}.` +
+      (muted.length
+        ? ` ${muted.length} muted (fixed / ignored); a muted one can still be diagnosed by id: profilot diagnose --id <eventId>.`
+        : ''),
+    ...(muted.length
+      ? { muted: muted.slice(0, 20).map((e) => ({ eventId: e.eventId, run: e.run, reviewStatus: e.reviewStatus })) }
+      : {}),
+  };
+}
+
+function diagnoseFile(base, file, run, runs, reviews, opts, pinned) {
+  const rec = withStale(withReview(readJson(file), reviews), run, runs[0]);
+  // Only warn on an IMPLICIT fallback. With --run the caller chose the run, so an older one is
+  // the answer they asked for, not a surprise.
+  return shapeTree(withCompat(pinned ? rec : runFallback(rec, run, runs)), opts);
+}
+
+// --last: the most recently captured event that still needs a look (open or regressed). Fixed and
+// ignored events are muted, and the guide tells Claude to skip them, so handing one back was a
+// dead end. A named --id is always served, muted or not.
+function cmdDiagnoseLast(base, runFilter, opts) {
   if (!base) return cmdStatus(base);
-  const lp = path.join(base, 'latest.json');
-  if (!fs.existsSync(lp)) {
-    return { status: 'no_data', message: 'No events captured yet.' };
+  if (runFilter) {
+    const bad = checkRun(base, runFilter);
+    if (bad) return bad;
   }
-  let pointer;
+  const runs = listRuns(base);
+  const reviews = reviewMap(base);
+  const all = collectEvents(base, runFilter ? [runFilter] : runs, reviews, runs[0]);
+  if (all.length === 0) return { status: 'no_data', message: runFilter ? `No events in run ${runFilter}.` : 'No events captured yet.' };
+  const active = all.filter((e) => ACTIVE.has(e.reviewStatus));
+  if (active.length === 0) return nothingOpen(runFilter ? `in run ${runFilter}` : 'in any run', all);
+  active.sort((a, b) => String(b.capturedAt).localeCompare(String(a.capturedAt)));
+  const pick = active[0];
   try {
-    pointer = readJson(lp);
+    return diagnoseFile(base, pick.file, pick.run, runs, reviews, opts, !!runFilter);
   } catch (e) {
-    return { status: 'error', message: `latest.json is unreadable: ${e.message}` };
+    return { status: 'error', message: `Event ${pick.eventId} is unreadable: ${e.message}` };
   }
-  const file = path.join(runsRoot(base), pointer.run || '', pointer.file || `${pointer.eventId}.json`);
-  if (!fs.existsSync(file)) {
-    return { status: 'error', message: `Event file missing for ${pointer.eventId}.` };
+}
+
+// --worst: the costliest open or regressed event of one run (the newest unless --run pins one):
+// highest severity first, then the most repeats, then the largest trigger value.
+function cmdDiagnoseWorst(base, runFilter, opts) {
+  if (!base) return cmdStatus(base);
+  if (runFilter) {
+    const bad = checkRun(base, runFilter);
+    if (bad) return bad;
   }
+  const runs = listRuns(base);
+  const run = runFilter || runs[0];
+  if (!run) return { status: 'no_data', message: 'No events captured yet.' };
+  const reviews = reviewMap(base);
+  const all = collectEvents(base, [run], reviews, runs[0]);
+  const active = all.filter((e) => ACTIVE.has(e.reviewStatus));
+  if (active.length === 0) return nothingOpen(`in run ${run}`, all);
+  active.sort(
+    (a, b) =>
+      (SEVERITY_RANK[b.severity] || 0) - (SEVERITY_RANK[a.severity] || 0) ||
+      (b.count || 0) - (a.count || 0) ||
+      (b.value || 0) - (a.value || 0),
+  );
+  const pick = active[0];
   try {
-    const runs = listRuns(base);
-    const rec = withStale(withReview(readJson(file), reviewMap(base)), pointer.run, runs[0]);
-    // latest.json is the last event WRITTEN, which can predate the newest run entirely - a run
-    // that captured nothing leaves the pointer on the previous one. Same trap as --id.
-    return shapeTree(withCompat(runFallback(rec, pointer.run, runs)), opts);
+    return diagnoseFile(base, pick.file, pick.run, runs, reviews, opts, true);
   } catch (e) {
-    return { status: 'error', message: `Event ${pointer.eventId} is unreadable: ${e.message}` };
+    return { status: 'error', message: `Event ${pick.eventId} is unreadable: ${e.message}` };
   }
 }
 
 // --id resolves to the newest run containing that event, unless --run pins a specific run.
 function cmdDiagnoseId(base, id, runFilter, opts) {
   if (!base) return cmdStatus(base);
-  if (!id) return { status: 'error', message: 'Missing --id <eventId>.' };
+  const badId = checkId(id);
+  if (badId) return { status: 'error', message: badId };
+  if (runFilter) {
+    const bad = checkRun(base, runFilter);
+    if (bad) return bad;
+  }
   const name = id.endsWith('.json') ? id : `${id}.json`;
   const allRuns = listRuns(base);
   const runs = runFilter ? [runFilter] : allRuns;
   for (const r of runs) {
     const file = path.join(runsRoot(base), r, name);
+    if (!inside(runsRoot(base), file)) break;
     if (fs.existsSync(file)) {
       try {
-        const rec = withStale(withReview(readJson(file), reviewMap(base)), r, allRuns[0]);
-        // Only warn on an IMPLICIT fallback. With --run the caller chose the run, so an older
-        // one is the answer they asked for, not a surprise.
-        return shapeTree(withCompat(runFilter ? rec : runFallback(rec, r, allRuns)), opts);
+        return diagnoseFile(base, file, r, allRuns, reviewMap(base), opts, !!runFilter);
       } catch (e) {
         return { status: 'error', message: `Event ${id} is unreadable: ${e.message}` };
       }
@@ -450,21 +572,19 @@ function cmdDiagnoseId(base, id, runFilter, opts) {
 // --depth <n> / --focus <markerName>, the two knobs that decide how much of the stored tree gets
 // printed. Both are validated here so a typo comes back as a clear message instead of a silently
 // ignored flag.
-function readShapeFlags(argv) {
+function readShapeFlags(flags) {
   const opts = { depth: null, focus: null };
 
-  const rawDepth = getFlag(argv, '--depth');
-  if (rawDepth === true) return { ...opts, error: 'Missing value for --depth <n>.' };
+  const rawDepth = flags['--depth'];
   if (rawDepth !== undefined) {
     const n = Number(rawDepth);
-    if (!Number.isInteger(n) || n < 0) {
+    if (rawDepth === '' || !Number.isInteger(n) || n < 0) {
       return { ...opts, error: `Invalid --depth "${rawDepth}": expected a non-negative integer.` };
     }
     opts.depth = n;
   }
 
-  const rawFocus = getFlag(argv, '--focus');
-  if (rawFocus === true) return { ...opts, error: 'Missing value for --focus <markerName>.' };
+  const rawFocus = flags['--focus'];
   if (rawFocus !== undefined) {
     if (!String(rawFocus).trim()) return { ...opts, error: 'Empty value for --focus <markerName>.' };
     opts.focus = String(rawFocus);
@@ -473,11 +593,106 @@ function readShapeFlags(argv) {
   return opts;
 }
 
-function getFlag(argv, name) {
-  const i = argv.indexOf(name);
-  if (i === -1) return undefined;
-  const next = argv[i + 1];
-  return next && !next.startsWith('--') ? next : true;
+// --- argument parsing -------------------------------------------------------------------------
+// Each command lists the options it takes. Anything else is an error, never a silent fallback:
+// `diagnose --id=evt_x`, `diagnose evt_x` and `diagnose --bogus` all used to quietly return the
+// latest event instead. Both `--flag value` and `--flag=value` are accepted.
+
+const COMMANDS = {
+  diagnose: { '--last': 'bool', '--worst': 'bool', '--id': 'value', '--run': 'value', '--focus': 'value', '--depth': 'value' },
+  list: { '--run': 'value', '--text': 'bool' },
+  runs: { '--text': 'bool' },
+  status: { '--text': 'bool' },
+  init: { '--path': 'value', '--no-package': 'bool' },
+};
+
+function parseArgs(argv) {
+  const command = argv[0];
+  const spec = COMMANDS[command];
+  const flags = {};
+  if (!spec) return { command, flags };
+  const valid = Object.keys(spec).join(', ');
+  for (let i = 1; i < argv.length; i++) {
+    const arg = argv[i];
+    if (!arg.startsWith('--')) {
+      const hint = command === 'diagnose' && arg.startsWith('evt_') ? ` Did you mean --id ${arg}?` : '';
+      return { command, flags, error: `Unexpected argument "${arg}" for ${command}.${hint} Options: ${valid}.` };
+    }
+    const eq = arg.indexOf('=');
+    const name = eq === -1 ? arg : arg.slice(0, eq);
+    const kind = spec[name];
+    if (!kind) return { command, flags, error: `Unknown option "${name}" for ${command}. Options: ${valid}.` };
+    if (kind === 'bool') {
+      if (eq !== -1) return { command, flags, error: `${name} takes no value.` };
+      flags[name] = true;
+      continue;
+    }
+    let value;
+    if (eq !== -1) value = arg.slice(eq + 1);
+    else if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) value = argv[++i];
+    if (value === undefined || value === '') return { command, flags, error: `Missing value for ${name}.` };
+    flags[name] = value;
+  }
+  if (command === 'diagnose') {
+    const picks = ['--last', '--worst', '--id'].filter((f) => f in flags);
+    if (picks.length > 1) return { command, flags, error: `Use one of ${picks.join(', ')}, not several.` };
+  }
+  return { command, flags };
+}
+
+const HELP = `profilot - read Unity performance events captured by the Profilot package
+
+Usage:
+  profilot diagnose [--last | --worst | --id <eventId>] [--run <run>] [--focus <marker>] [--depth <n>]
+      --last     newest open or regressed event (the default)
+      --worst    costliest open or regressed event in the newest run (or --run)
+      --id       that event, even if it is muted (fixed / ignored)
+      --run      pin a run (see \`profilot runs\`)
+      --focus    re-root the marker tree at a marker (substring match)
+      --depth    print n levels of the marker tree (default 6)
+  profilot list [--run <run>] [--text]      events, newest first
+  profilot runs [--text]                    Play runs, newest first
+  profilot status [--text]                  store, versions and warnings
+  profilot init [--path <dir>] [--no-package]
+                                            wire a Unity project: package, guide, CLAUDE.md
+  profilot --version
+
+Output is JSON for Claude Code (--text prints lines for people). Every command exits 0; a
+failure is reported in the "status" field. Run it from the Unity project folder, or set
+PROFILOT_PROJECT to the project root.
+`;
+
+// --- --text: the same answers as lines, for a person at a terminal ------------------------------
+
+function textOf(command, r) {
+  if (r.status !== 'ok') {
+    const lines = [`${r.status}: ${r.message || ''}`.trim()];
+    if (r.runs) lines.push(`runs: ${r.runs.join(', ')}`);
+    for (const w of r.warnings || []) lines.push(`warning: ${w}`);
+    return lines.join('\n');
+  }
+  if (command === 'status') {
+    const v = r.versions || {};
+    const lines = [
+      `store    ${r.base}`,
+      `runs     ${r.runCount}, events ${r.eventCount}`,
+      `latest   ${r.latest ? `${r.latest.eventId} (run ${r.latest.run})` : '-'}`,
+      `versions cli ${v.cli}, package ${v.package}, guide ${v.guide}`,
+    ];
+    for (const w of r.warnings || []) lines.push(`warning  ${w}`);
+    return lines.join('\n');
+  }
+  if (command === 'runs') {
+    if (!r.runs.length) return 'No runs yet.';
+    return r.runs.map((x) => `${x.run}  ${x.eventCount === 0 ? 'clean' : `${x.eventCount} event${x.eventCount === 1 ? '' : 's'}`}`).join('\n');
+  }
+  if (command === 'list') {
+    if (!r.events.length) return 'No events.';
+    return r.events
+      .map((e) => [e.run, e.type, e.severity, e.reviewStatus, e.eventId].map((s) => String(s == null ? '-' : s)).join('  '))
+      .join('\n');
+  }
+  return JSON.stringify(r, null, 2);
 }
 
 // --- init: one-step install into a Unity project ------------------------------------------------
@@ -553,9 +768,8 @@ function initClaudeMd(root) {
   return { step: 'claudeMd', result: before === '' ? 'created' : 'added', path: file };
 }
 
-function cmdInit(argv) {
-  const pathFlag = getFlag(argv, '--path');
-  if (pathFlag === true) return { status: 'error', message: 'Missing value for --path <unityProjectRoot>.' };
+function cmdInit(flags) {
+  const pathFlag = flags['--path'];
   const start = pathFlag || process.env.PROFILOT_PROJECT || process.cwd();
   const root = findUnityRoot(start);
   if (!root) {
@@ -564,7 +778,7 @@ function cmdInit(argv) {
       message: `No Unity project found at or above ${path.resolve(start)} (looked for Packages/manifest.json + ProjectSettings/). Run this from the Unity project folder, or pass --path.`,
     };
   }
-  const steps = [initManifest(root, argv.includes('--no-package')), initGuide(root), initClaudeMd(root)];
+  const steps = [initManifest(root, !!flags['--no-package']), initGuide(root), initClaudeMd(root)];
   const failed = steps.filter((s) => s.result === 'error');
   return {
     status: failed.length ? 'error' : 'ok',
@@ -584,43 +798,51 @@ function main() {
     print({ status: 'ok', version: require('./package.json').version });
     return;
   }
-  const base = findBase();
-  const runFlag = getFlag(argv, '--run');
-  const run = typeof runFlag === 'string' ? runFlag : undefined;
-
-  let result;
-  switch (command) {
-    case 'status':
-      result = cmdStatus(base);
-      break;
-    case 'runs':
-      result = cmdRuns(base);
-      break;
-    case 'list':
-      result = cmdList(base, run);
-      break;
-    case 'init':
-      result = cmdInit(argv);
-      break;
-    case 'diagnose': {
-      const id = getFlag(argv, '--id');
-      const opts = readShapeFlags(argv);
-      if (opts.error) {
-        result = { status: 'error', message: opts.error };
-        break;
-      }
-      if (typeof id === 'string') result = cmdDiagnoseId(base, id, run, opts);
-      else result = cmdDiagnoseLast(base, opts); // --last is the default
-      break;
-    }
-    default:
-      result = {
-        status: 'error',
-        message: `Unknown command "${command || ''}". Usage: profilot <diagnose [--last|--id <eventId>] [--run <id>] [--focus <markerName>] [--depth <n>]|list [--run <id>]|runs|status|init [--path <dir>] [--no-package]|--version>.`,
-      };
+  // Help is for a person, so it is plain text, not JSON.
+  if (command === undefined || command === '--help' || command === '-h' || command === 'help') {
+    process.stdout.write(HELP);
+    return;
   }
 
-  print(result);
+  const { flags, error } = parseArgs(argv);
+  const base = findBase();
+  const run = flags['--run'];
+
+  let result;
+  if (error) {
+    result = { status: 'error', message: error };
+  } else {
+    switch (command) {
+      case 'status':
+        result = cmdStatus(base);
+        break;
+      case 'runs':
+        result = cmdRuns(base);
+        break;
+      case 'list':
+        result = cmdList(base, run);
+        break;
+      case 'init':
+        result = cmdInit(flags);
+        break;
+      case 'diagnose': {
+        const opts = readShapeFlags(flags);
+        if (opts.error) result = { status: 'error', message: opts.error };
+        else if (flags['--id'] !== undefined) result = cmdDiagnoseId(base, flags['--id'], run, opts);
+        else if (flags['--worst']) result = cmdDiagnoseWorst(base, run, opts);
+        else result = cmdDiagnoseLast(base, run, opts); // --last is the default
+        break;
+      }
+      default:
+        result = {
+          status: 'error',
+          message: `Unknown command "${command}". Commands: diagnose, list, runs, status, init, --version. Run \`profilot --help\` for options.`,
+        };
+    }
+  }
+
+  if (flags['--text']) process.stdout.write(textOf(command, result) + '\n');
+  else print(result);
   // Not process.exit(): on macOS/Linux a piped stdout is async, and exiting right after the write
   // cut every payload over 64 KB mid-JSON (exit 0, unparseable output). Let the write drain.
   process.exitCode = 0;

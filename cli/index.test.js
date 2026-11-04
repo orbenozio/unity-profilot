@@ -204,18 +204,18 @@ test('list: skips a malformed event file rather than failing', () => {
   assert.equal(r.events[0].eventId, 'evt_good_gc_spike');
 });
 
-test('diagnose --last: error when latest points to a missing file', () => {
+test('diagnose --last: no_data when the only event file is gone (latest.json is not trusted)', () => {
   const p = makeProject([sampleEvent('evt_a_gc_spike', 'gc_spike', '2026-06-25T10:00:00Z')]);
   fs.rmSync(path.join(runDir(p, '2026-06-25_10-00-00'), 'evt_a_gc_spike.json')); // keep latest.json, drop the event
   const r = run(p, ['diagnose', '--last']);
-  assert.equal(r.status, 'error');
+  assert.equal(r.status, 'no_data');
 });
 
-test('diagnose --last: error on malformed latest.json', () => {
+test('diagnose --last: a malformed latest.json does not matter', () => {
   const p = makeProject([sampleEvent('evt_a_gc_spike', 'gc_spike', '2026-06-25T10:00:00Z')]);
   fs.writeFileSync(latestFile(p), 'not json');
   const r = run(p, ['diagnose', '--last']);
-  assert.equal(r.status, 'error');
+  assert.equal(r.eventId, 'evt_a_gc_spike');
 });
 
 // ---------------------------------------------------------------------------
@@ -580,4 +580,130 @@ test('status: an older package is flagged', () => {
   const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
   fs.writeFileSync(path.join(baseDir(p), 'meta.json'), JSON.stringify({ schemaVersion: '1', packageVersion: '0.5.1' }));
   assert.ok(run(p, ['status']).warnings.some((w) => w.includes('Unity package is older')));
+});
+
+// --- 0.8: strict arguments, safe paths, --last / --worst, EPIPE ---------------------------------
+
+function runRaw(projectRoot, args) {
+  return execFileSync('node', [CLI, ...args], { env: { ...process.env, PROFILOT_PROJECT: projectRoot }, encoding: 'utf8' });
+}
+
+test('args: --flag=value works like --flag value', () => {
+  const p = makeProject([
+    sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z'),
+    sampleEvent('evt_b', 'gc_spike', '2026-06-25T10:00:01Z'),
+  ]);
+  assert.equal(run(p, ['diagnose', '--id=evt_a']).eventId, 'evt_a');
+  assert.equal(run(p, ['diagnose', '--id=evt_a', '--depth=0']).markerTree.truncated, undefined);
+});
+
+test('args: a positional id, an unknown flag or a missing value is an error, not the latest event', () => {
+  const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
+  const pos = run(p, ['diagnose', 'evt_a']);
+  assert.equal(pos.status, 'error');
+  assert.match(pos.message, /--id evt_a/);
+  assert.equal(run(p, ['diagnose', '--bogus']).status, 'error');
+  assert.equal(run(p, ['diagnose', '--id']).status, 'error');
+  assert.equal(run(p, ['diagnose', '--id', 'evt_a', '--run']).status, 'error');
+  assert.equal(run(p, ['diagnose', '--focus=']).status, 'error');
+  assert.equal(run(p, ['diagnose', '--last', '--id', 'evt_a']).status, 'error');
+  assert.equal(run(p, ['list', '--last']).status, 'error');
+});
+
+test('args: an unknown run is an error that lists the real ones', () => {
+  const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
+  const l = run(p, ['list', '--run', 'bogus']);
+  assert.equal(l.status, 'error');
+  assert.deepEqual(l.runs, ['2026-06-25_10-00-00']);
+  assert.equal(run(p, ['diagnose', '--id', 'evt_a', '--run', '2026-01-01_00-00-00']).status, 'error');
+});
+
+test('paths: --id and --run cannot leave the store', () => {
+  const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
+  fs.writeFileSync(path.join(baseDir(p), 'reviews.json'), JSON.stringify({ items: [] }));
+  fs.writeFileSync(path.join(p, 'Library', 'secret.json'), JSON.stringify({ eventId: 'secret' }));
+  for (const id of ['../../reviews', '../../../secret', '..', 'a/b', 'a\\b']) {
+    assert.equal(run(p, ['diagnose', '--id', id]).status, 'error', id);
+  }
+  assert.equal(run(p, ['diagnose', '--id', 'evt_a', '--run', '..']).status, 'error');
+  assert.equal(run(p, ['list', '--run', '../runs/2026-06-25_10-00-00']).status, 'error');
+});
+
+test('runs: a folder that is not a timestamp never poses as the newest run', () => {
+  const p = makeProject([
+    sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z', 'open', '2026-06-25_10-00-00'),
+    sampleEvent('evt_s', 'gc_spike', '2026-06-25T09:00:00Z', 'open', 'session'),
+  ]);
+  assert.deepEqual(run(p, ['runs']).runs.map((r) => r.run), ['2026-06-25_10-00-00', 'session']);
+  assert.equal(run(p, ['diagnose', '--id', 'evt_a']).runFallback, undefined);
+});
+
+test('diagnose --last: skips fixed and ignored events; --id still serves them', () => {
+  const p = makeProject([
+    sampleEvent('evt_open', 'gc_spike', '2026-06-25T10:00:00Z'),
+    sampleEvent('evt_fixed', 'gc_spike', '2026-06-25T10:00:01Z'),
+    sampleEvent('evt_ignored', 'gc_spike', '2026-06-25T10:00:02Z'),
+  ]);
+  fs.writeFileSync(
+    path.join(baseDir(p), 'reviews.json'),
+    JSON.stringify({ items: [{ id: 'evt_fixed', status: 'fixed', value: 1 }, { id: 'evt_ignored', status: 'ignored' }] }),
+  );
+  assert.equal(run(p, ['diagnose', '--last']).eventId, 'evt_open');
+  assert.equal(run(p, ['diagnose']).eventId, 'evt_open');
+  assert.equal(run(p, ['diagnose', '--id', 'evt_ignored']).reviewStatus, 'ignored');
+});
+
+test('diagnose --last: everything muted says so instead of serving a muted event', () => {
+  const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
+  fs.writeFileSync(path.join(baseDir(p), 'reviews.json'), JSON.stringify({ items: [{ id: 'evt_a', status: 'ignored' }] }));
+  const r = run(p, ['diagnose', '--last']);
+  assert.equal(r.status, 'no_data');
+  assert.deepEqual(r.muted, [{ eventId: 'evt_a', run: '2026-06-25_10-00-00', reviewStatus: 'ignored' }]);
+});
+
+test('diagnose --worst: highest severity, then most repeats, in the newest run', () => {
+  const low = sampleEvent('evt_low', 'gc_spike', '2026-06-26T10:00:03Z', 'open', '2026-06-26_10-00-00');
+  const highFew = sampleEvent('evt_high_few', 'frame_hitch', '2026-06-26T10:00:01Z', 'open', '2026-06-26_10-00-00');
+  highFew.trigger.severity = 'high';
+  highFew.dedup.count = 2;
+  const highMany = sampleEvent('evt_high_many', 'gc_spike', '2026-06-26T10:00:02Z', 'open', '2026-06-26_10-00-00');
+  highMany.trigger.severity = 'high';
+  highMany.dedup.count = 9;
+  const older = sampleEvent('evt_older', 'gc_spike', '2026-06-25T10:00:00Z', 'open', '2026-06-25_10-00-00');
+  older.trigger.severity = 'high';
+  older.dedup.count = 99;
+  const p = makeProject([older, low, highFew, highMany]);
+  assert.equal(run(p, ['diagnose', '--worst']).eventId, 'evt_high_many');
+  assert.equal(run(p, ['diagnose', '--worst', '--run', '2026-06-25_10-00-00']).eventId, 'evt_older');
+});
+
+test('help: plain text usage for a person', () => {
+  const out = execFileSync('node', [CLI, '--help'], { encoding: 'utf8' });
+  assert.match(out, /^profilot - /);
+  assert.match(out, /--worst/);
+  assert.match(execFileSync('node', [CLI], { encoding: 'utf8' }), /Usage:/);
+});
+
+test('--text: status, runs and list as lines', () => {
+  const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
+  fs.mkdirSync(runDir(p, '2026-06-26_10-00-00'), { recursive: true });
+  assert.match(runRaw(p, ['status', '--text']), /^store /);
+  assert.equal(runRaw(p, ['runs', '--text']), '2026-06-26_10-00-00  clean\n2026-06-25_10-00-00  1 event\n');
+  assert.match(runRaw(p, ['list', '--text']), /^2026-06-25_10-00-00  gc_spike  low  open  evt_a\n$/);
+});
+
+test('pipe: a reader that closes early does not crash the CLI (no EPIPE trace, exit 0)', () => {
+  const e = sampleEvent('evt_big', 'gc_spike', '2026-06-25T10:00:00Z');
+  e.markerTree.children = [];
+  for (let i = 0; i < 20000; i++) {
+    e.markerTree.children.push({ name: `Marker${i}_${'x'.repeat(60)}`, selfTimeMs: 1, totalTimeMs: 1, gcAllocBytes: 0, calls: 1 });
+  }
+  const p = makeProject([e]);
+  const res = require('node:child_process').spawnSync(
+    'bash',
+    ['-c', `node "${CLI}" diagnose --id evt_big --depth 1 2>"${p}/err.txt" | head -c 100 >/dev/null; echo \${PIPESTATUS[0]}`],
+    { env: { ...process.env, PROFILOT_PROJECT: p }, encoding: 'utf8' },
+  );
+  assert.equal(res.stdout.trim(), '0');
+  assert.equal(fs.readFileSync(path.join(p, 'err.txt'), 'utf8'), '');
 });
