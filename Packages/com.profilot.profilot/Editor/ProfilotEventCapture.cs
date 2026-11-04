@@ -22,7 +22,8 @@ namespace Profilot.Editor
         // Bump whenever the record's fields change, so the CLI can tell an older record (missing
         // fields) from a newer one it does not know yet. 2 = frameGcAllocBytes, likelyCause,
         // markerTreeDepth, capturedFrameTimeMs, frameMatchesTrigger, writerVersion.
-        internal const string SchemaVersion = "2";
+        // 3 = dedup.peakValue, run.json per run, no stored "stale" (the CLI computes it).
+        internal const string SchemaVersion = "3";
 
         // The package version that wrote a record (writerVersion), read once from the package
         // manifest. "unknown" when the package is not resolved through the Package Manager.
@@ -57,6 +58,7 @@ namespace Profilot.Editor
 
         private static readonly List<TripSignal> Buffer = new List<TripSignal>();
         private static string _sessionId = "editor";
+        private static string _runStartedAt = string.Empty;
 
         /// <summary>The id of the current Play run, so the window can mark which events are from
         /// this run versus an earlier one.</summary>
@@ -70,6 +72,7 @@ namespace Profilot.Editor
         {
             public int Count;
             public int FirstSeenFrame;
+            public double Peak;
         }
 
         private static readonly Dictionary<string, Accumulator> Dedup = new Dictionary<string, Accumulator>();
@@ -81,27 +84,78 @@ namespace Profilot.Editor
         //   "regressed" - a fixed problem that came back worse; alerts like an open one.
         // Remembered so that an ongoing spike of the same problem does not reset it back to
         // "open" when the record is overwritten.
+        // A fixed problem that comes back below the regression line stays muted but is not
+        // invisible: SeenAgain* say how often, in which run and how big, so "did my fix work?"
+        // has an answer. Helped is the user's yes/no on whether the diagnosis helped.
         private sealed class Review
         {
             public string Status;
             public double Value;
+            public string MarkedAt = string.Empty;
+            public int SeenAgainCount;
+            public string SeenAgainRun = string.Empty;
+            public double SeenAgainValue;
+            public string Helped = string.Empty;
         }
 
         private const double RegressionFactor = 3.0;
         private static readonly Dictionary<string, Review> Reviewed = new Dictionary<string, Review>();
 
-        /// <summary>Called by the window when the user marks an event (SPEC.md JTBD-8). `value`
-        /// is the event's trigger value, the reference a "fixed" mark measures a comeback against.</summary>
-        internal static void MarkReviewed(string eventId, string status, double value = 0)
+        /// <summary>Called by the window when the user marks an event (SPEC.md JTBD-8). A "fixed"
+        /// mark measures a comeback against the problem's PEAK across every run, not the value on
+        /// the card that was clicked: a quiet repeat as the reference raised false "regressed"
+        /// alerts, and an older run's card set the bar too low.</summary>
+        internal static void MarkReviewed(string eventId, string status)
         {
             // "open" is the absence of a decision (Reopen) - drop it from the persisted map so
             // notifications resume; any other status is remembered across sessions.
             if (status == "open")
                 Reviewed.Remove(eventId);
             else
-                Reviewed[eventId] = new Review { Status = status, Value = value };
+                Reviewed[eventId] = new Review
+                {
+                    Status = status,
+                    Value = status == "fixed" ? PeakAcrossRuns(eventId) : 0,
+                    MarkedAt = DateTime.UtcNow.ToString("o"),
+                };
 
             SaveReviews();
+        }
+
+        /// <summary>The user's answer to "did the diagnosis help?" (feeds SPEC.md M2).</summary>
+        internal static void MarkHelped(string eventId, bool helped)
+        {
+            if (!Reviewed.TryGetValue(eventId, out Review r))
+                return;
+            r.Helped = helped ? "yes" : "no";
+            SaveReviews();
+        }
+
+        [System.Serializable] private class PeakRecord { public PeakTrigger trigger; public PeakDedup dedup; }
+        [System.Serializable] private class PeakTrigger { public double value; }
+        [System.Serializable] private class PeakDedup { public double peakValue; }
+
+        /// <summary>The largest value this problem reached in any stored run (the peak a record
+        /// carries, or its trigger value for a record from before peaks were kept).</summary>
+        internal static double PeakAcrossRuns(string eventId)
+        {
+            double peak = 0;
+            foreach (string run in ProfilotEventStore.ListRuns())
+            {
+                string file = ProfilotEventStore.EventPath(run, eventId);
+                if (!System.IO.File.Exists(file))
+                    continue;
+                try
+                {
+                    PeakRecord r = JsonUtility.FromJson<PeakRecord>(System.IO.File.ReadAllText(file));
+                    if (r == null)
+                        continue;
+                    if (r.dedup != null) peak = Math.Max(peak, r.dedup.peakValue);
+                    if (r.trigger != null) peak = Math.Max(peak, r.trigger.value);
+                }
+                catch { /* a file caught mid-write just does not count */ }
+            }
+            return peak;
         }
 
         static ProfilotEventCapture()
@@ -111,10 +165,20 @@ namespace Profilot.Editor
             LoadReviews();
         }
 
-        [System.Serializable] private class ReviewRecord { public string id; public string status; public double value; }
+        [System.Serializable] private class ReviewRecord
+        {
+            public string id;
+            public string status;
+            public double value;
+            public string markedAt;
+            public int seenAgainCount;
+            public string seenAgainRun;
+            public double seenAgainValue;
+            public string helped;
+        }
         [System.Serializable] private class ReviewFile { public List<ReviewRecord> items = new List<ReviewRecord>(); }
 
-        private static void LoadReviews()
+        internal static void LoadReviews()
         {
             Reviewed.Clear();
             string json = ProfilotEventStore.ReadReviews();
@@ -126,7 +190,16 @@ namespace Profilot.Editor
                 if (f?.items != null)
                     foreach (ReviewRecord it in f.items)
                         if (!string.IsNullOrEmpty(it.id) && !string.IsNullOrEmpty(it.status))
-                            Reviewed[it.id] = new Review { Status = MigrateStatus(it.status), Value = it.value };
+                            Reviewed[it.id] = new Review
+                            {
+                                Status = MigrateStatus(it.status),
+                                Value = it.value,
+                                MarkedAt = it.markedAt ?? string.Empty,
+                                SeenAgainCount = it.seenAgainCount,
+                                SeenAgainRun = it.seenAgainRun ?? string.Empty,
+                                SeenAgainValue = it.seenAgainValue,
+                                Helped = it.helped ?? string.Empty,
+                            };
             }
             catch { /* a corrupt reviews file should never break capture */ }
         }
@@ -134,7 +207,7 @@ namespace Profilot.Editor
         // Before 0.7 the two buttons were "reviewed" and "not_a_real_issue", and both muted
         // forever. They map onto the new pair; an old "reviewed" has no value, so its first
         // comeback sets the reference instead of alerting.
-        private static string MigrateStatus(string status)
+        internal static string MigrateStatus(string status)
         {
             switch (status)
             {
@@ -148,7 +221,15 @@ namespace Profilot.Editor
         {
             var f = new ReviewFile();
             foreach (var kv in Reviewed)
-                f.items.Add(new ReviewRecord { id = kv.Key, status = kv.Value.Status, value = kv.Value.Value });
+            {
+                Review r = kv.Value;
+                f.items.Add(new ReviewRecord
+                {
+                    id = kv.Key, status = r.Status, value = r.Value, markedAt = r.MarkedAt,
+                    seenAgainCount = r.SeenAgainCount, seenAgainRun = r.SeenAgainRun,
+                    seenAgainValue = r.SeenAgainValue, helped = r.Helped,
+                });
+            }
             try { ProfilotEventStore.WriteReviews(JsonUtility.ToJson(f)); }
             catch { /* best effort */ }
         }
@@ -162,7 +243,7 @@ namespace Profilot.Editor
 
         /// <summary>A "fixed" problem caught again at RegressionFactor times the value it was marked
         /// at turns "regressed" (persisted). Returns true on that transition only.</summary>
-        private static bool CheckRegression(string eventId, double value)
+        internal static bool CheckRegression(string eventId, double value)
         {
             if (!Reviewed.TryGetValue(eventId, out Review r) || r.Status != "fixed")
                 return false;
@@ -190,10 +271,44 @@ namespace Profilot.Editor
             return Reviewed.TryGetValue(eventId, out Review r) ? r.Status : "open";
         }
 
-        /// <summary>The trigger value a "fixed" mark was made at (0 when unknown or not fixed).</summary>
+        /// <summary>The peak a "fixed" mark was made at (0 when unknown or not fixed).</summary>
         internal static double FixedValueOf(string eventId)
         {
             return Reviewed.TryGetValue(eventId, out Review r) && r.Status == "fixed" ? r.Value : 0;
+        }
+
+        /// <summary>A fixed problem caught again below the regression line: how often, the run it
+        /// was last seen in, and its largest value since the mark. False when not seen again.</summary>
+        internal static bool SeenAgainAfterFixed(string eventId, out int count, out string run, out double value)
+        {
+            count = 0; run = null; value = 0;
+            if (!Reviewed.TryGetValue(eventId, out Review r) || r.Status != "fixed" || r.SeenAgainCount <= 0)
+                return false;
+            count = r.SeenAgainCount; run = r.SeenAgainRun; value = r.SeenAgainValue;
+            return true;
+        }
+
+        internal static string HelpedOf(string eventId)
+        {
+            return Reviewed.TryGetValue(eventId, out Review r) ? r.Helped : string.Empty;
+        }
+
+        // Fixed problems already counted as seen again this run, so reviews.json is written once
+        // per problem per run (the rest of the count is saved when Play ends).
+        private static readonly HashSet<string> SeenAgainThisRun = new HashSet<string>();
+        private static bool _reviewsDirty;
+
+        internal static void NoteSeenAgain(string eventId, in TripSignal signal)
+        {
+            if (!Reviewed.TryGetValue(eventId, out Review r) || r.Status != "fixed")
+                return;
+            r.SeenAgainCount += signal.RepeatCount + 1;
+            r.SeenAgainRun = _sessionId;
+            r.SeenAgainValue = Math.Max(r.SeenAgainValue, signal.Value);
+            if (SeenAgainThisRun.Add(eventId))
+                SaveReviews();
+            else
+                _reviewsDirty = true;
         }
 
         /// <summary>How many times worse a fixed problem has to come back to alert again.</summary>
@@ -246,6 +361,15 @@ namespace Profilot.Editor
         {
             if (change == PlayModeStateChange.ExitingPlayMode)
             {
+                if (_reviewsDirty)
+                {
+                    SaveReviews();
+                    _reviewsDirty = false;
+                }
+
+                try { ProfilotEventStore.WriteRunInfo(_sessionId, BuildRunInfo(true)); }
+                catch { /* best effort */ }
+
                 // Leave the Profiler window the way the user had it.
                 if (_driverWasEnabled == false)
                     ProfilerDriver.enabled = false;
@@ -261,6 +385,9 @@ namespace Profilot.Editor
             // it must avoid ':' (illegal in a Windows path).
             _sessionId = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
             ProfilotEventStore.CurrentRun = _sessionId;
+            _runStartedAt = DateTime.UtcNow.ToString("o");
+            SeenAgainThisRun.Clear();
+            _reviewsDirty = false;
 
             // Which package and schema write this store, so `profilot status` can tell the user
             // when the CLI, the package and the project's guide have drifted apart.
@@ -272,6 +399,10 @@ namespace Profilot.Editor
             ProfilotConfig cfg = ProfilotConfigStore.Load();
             if (cfg.pruneEnabled)
                 ProfilotEventStore.PruneByAge(cfg.retentionDays);
+
+            // The run exists from its first frame, so a run that catches nothing is on record.
+            try { ProfilotEventStore.StartRun(_sessionId, BuildRunInfo(false)); }
+            catch { /* best effort - capture does not depend on it */ }
 
             // Arm the profiler for marker->code mapping (on by default - it was measured to
             // add negligible per-frame cost). Off only if the user opted into counter-only mode
@@ -399,9 +530,12 @@ namespace Profilot.Editor
                 Dedup[eventId] = acc;
             }
             acc.Count += signal.RepeatCount + 1;
+            acc.Peak = Math.Max(acc.Peak, signal.Value);
 
             // Before the record is built, so it already carries "regressed".
             bool regressed = CheckRegression(eventId, signal.Value);
+            if (!regressed)
+                NoteSeenAgain(eventId, signal);
 
             string likelyCause = LikelyCause(dominantMarker);
 
@@ -433,7 +567,7 @@ namespace Profilot.Editor
         /// "() [Invoke]" decoration, keeps the method-ish tail, so the dedup id is stable
         /// and readable (e.g. "GarbageGenerator.Update").
         /// </summary>
-        private static string Slug(string marker)
+        internal static string Slug(string marker)
         {
             if (string.IsNullOrEmpty(marker))
                 return "unknown";
@@ -561,7 +695,6 @@ namespace Profilot.Editor
             sb.Append(",\"eventId\":").Append(Json.Str(eventId));
             sb.Append(",\"status\":").Append(Json.Str(status));
             sb.Append(",\"reviewStatus\":").Append(Json.Str(review));
-            sb.Append(",\"stale\":false");
             sb.Append(",\"capturedAt\":").Append(Json.Str(DateTime.UtcNow.ToString("o")));
             sb.Append(",\"sessionId\":").Append(Json.Str(_sessionId));
             sb.Append(",\"unityVersion\":").Append(Json.Str(Application.unityVersion));
@@ -622,6 +755,7 @@ namespace Profilot.Editor
             sb.Append("\"count\":").Append(Json.Num(acc.Count));
             sb.Append(",\"firstSeenFrame\":").Append(Json.Num(acc.FirstSeenFrame));
             sb.Append(",\"lastSeenFrame\":").Append(Json.Num(signal.FrameCount));
+            sb.Append(",\"peakValue\":").Append(Json.Num(acc.Peak));
             sb.Append('}');
 
             sb.Append('}');
@@ -637,6 +771,20 @@ namespace Profilot.Editor
             sb.Append(",\"run\":").Append(Json.Str(_sessionId));
             sb.Append(",\"file\":").Append(Json.Str(eventId + ".json"));
             sb.Append(",\"capturedAt\":").Append(Json.Str(DateTime.UtcNow.ToString("o")));
+            sb.Append('}');
+            return sb.ToString();
+        }
+
+        private static string BuildRunInfo(bool ended)
+        {
+            var sb = new StringBuilder(200);
+            sb.Append('{');
+            sb.Append("\"schemaVersion\":").Append(Json.Str(SchemaVersion));
+            sb.Append(",\"run\":").Append(Json.Str(_sessionId));
+            sb.Append(",\"packageVersion\":").Append(Json.Str(WriterVersion));
+            sb.Append(",\"startedAt\":").Append(Json.Str(_runStartedAt));
+            if (ended)
+                sb.Append(",\"endedAt\":").Append(Json.Str(DateTime.UtcNow.ToString("o")));
             sb.Append('}');
             return sb.ToString();
         }

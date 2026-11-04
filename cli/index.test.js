@@ -516,12 +516,20 @@ test('stale: false in the newest run, true in an older one (list and diagnose)',
   assert.equal(run(p, ['diagnose', '--last']).stale, false);
 });
 
-test('stale: an event pinned with --run to an older run is still stale', () => {
+test('stale is per event: a record pinned to an older run is not stale if the problem recurred', () => {
   const p = makeProject([
     sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z', 'open', '2026-06-25_10-00-00'),
     sampleEvent('evt_a', 'gc_spike', '2026-06-26T10:00:00Z', 'open', '2026-06-26_10-00-00'),
   ]);
-  assert.equal(run(p, ['diagnose', '--id', 'evt_a', '--run', '2026-06-25_10-00-00']).stale, true);
+  const pinned = run(p, ['diagnose', '--id', 'evt_a', '--run', '2026-06-25_10-00-00']);
+  assert.equal(pinned.stale, false);
+  assert.deepEqual(pinned.recurrence, {
+    lastSeenRun: '2026-06-26_10-00-00',
+    newestRun: '2026-06-26_10-00-00',
+    seenInNewestRun: true,
+    runsSeen: 2,
+    runsSince: 0,
+  });
   assert.equal(run(p, ['diagnose', '--id', 'evt_a']).stale, false);
 });
 
@@ -531,17 +539,19 @@ test('compat: an older record lists the fields it lacks', () => {
   const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
   const d = run(p, ['diagnose', '--id', 'evt_a']);
   assert.equal(d.compat.schemaVersion, 1);
-  assert.equal(d.compat.cliSchemaVersion, 2);
+  assert.equal(d.compat.cliSchemaVersion, 3);
   assert.ok(d.compat.missingFields.includes('frameMatchesTrigger'));
   assert.ok(d.compat.missingFields.includes('markerTreeDepth'));
+  assert.ok(d.compat.missingFields.includes('dedup.peakValue'));
 });
 
 test('compat: nothing added for a current record', () => {
   const e = {
     ...sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z'),
-    schemaVersion: '2',
-    writerVersion: '0.7.0',
+    schemaVersion: '3',
+    writerVersion: '0.8.0',
   };
+  e.dedup.peakValue = 1000;
   const p = makeProject([e]);
   assert.equal(run(p, ['diagnose', '--last']).compat, undefined);
 });
@@ -554,12 +564,12 @@ test('compat: a newer record says to update the CLI', () => {
 
 test('status: versions of the CLI, the package and the guide copy', () => {
   const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
-  fs.writeFileSync(path.join(baseDir(p), 'meta.json'), JSON.stringify({ schemaVersion: '2', packageVersion: '0.7.0' }));
+  fs.writeFileSync(path.join(baseDir(p), 'meta.json'), JSON.stringify({ schemaVersion: '3', packageVersion: require('./package.json').version }));
 
   let s = run(p, ['status']);
   assert.equal(s.versions.cli, require('./package.json').version);
-  assert.equal(s.versions.package, '0.7.0');
-  assert.deepEqual(s.versions.schema, { cli: 2, package: 2 });
+  assert.equal(s.versions.package, require('./package.json').version);
+  assert.deepEqual(s.versions.schema, { cli: 3, package: 3 });
   assert.equal(s.versions.guide, 'missing');
   assert.ok(s.warnings.some((w) => w.includes('profilot init')));
 
@@ -726,7 +736,7 @@ test('guide: its header names the CLI version (they release together)', () => {
 
 test('guide: a CRLF copy is current, a locally edited one is "edited" (a note, not a warning)', () => {
   const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
-  fs.writeFileSync(path.join(baseDir(p), 'meta.json'), JSON.stringify({ schemaVersion: '2', packageVersion: require('./package.json').version }));
+  fs.writeFileSync(path.join(baseDir(p), 'meta.json'), JSON.stringify({ schemaVersion: '3', packageVersion: require('./package.json').version }));
   withGuide(p, shippedGuide().replace(/\n/g, '\r\n'));
   assert.equal(run(p, ['status']).versions.guide, 'current');
   withGuide(p, shippedGuide() + '\n## Our team notes\n');
@@ -752,9 +762,9 @@ test('status: runs but no meta.json warns that the package predates 0.7', () => 
 test('status: same schema but a different release is flagged, naming the older side', () => {
   const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
   const meta = path.join(baseDir(p), 'meta.json');
-  fs.writeFileSync(meta, JSON.stringify({ schemaVersion: '2', packageVersion: '0.6.9' }));
+  fs.writeFileSync(meta, JSON.stringify({ schemaVersion: '3', packageVersion: '0.6.9' }));
   assert.ok(run(p, ['status']).warnings.some((w) => w.includes('Unity package (0.6.9) is older')));
-  fs.writeFileSync(meta, JSON.stringify({ schemaVersion: '2', packageVersion: '99.0.0' }));
+  fs.writeFileSync(meta, JSON.stringify({ schemaVersion: '3', packageVersion: '99.0.0' }));
   assert.ok(run(p, ['status']).warnings.some((w) => w.includes('is older than the Unity package (99.0.0)')));
 });
 
@@ -776,4 +786,64 @@ test('init: an edited guide is backed up before it is replaced; line endings alo
   const g2 = stepOf(run(root, ['init', '--path', root, '--no-package']), 'guide');
   assert.notEqual(g2.backup, g.backup);
   assert.equal(fs.readFileSync(g.backup, 'utf8'), 'my own notes\n');
+});
+
+// --- 0.8: "is it fixed?" ------------------------------------------------------------------------
+
+test('recurrence: a clean newest run makes the event stale, with the runs since', () => {
+  const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z', 'open', '2026-06-25_10-00-00')]);
+  for (const r of ['2026-06-26_10-00-00', '2026-06-27_10-00-00']) {
+    fs.mkdirSync(runDir(p, r), { recursive: true });
+    fs.writeFileSync(path.join(runDir(p, r), 'run.json'), JSON.stringify({ schemaVersion: '3', run: r }));
+  }
+  const d = run(p, ['diagnose', '--id', 'evt_a']);
+  assert.equal(d.stale, true);
+  assert.equal(d.recurrence.seenInNewestRun, false);
+  assert.equal(d.recurrence.runsSince, 2);
+  assert.equal(typeof d.ageDays, 'number');
+  const l = run(p, ['list']).events[0];
+  assert.equal(l.stale, true);
+  assert.equal(l.lastSeenRun, '2026-06-25_10-00-00');
+  assert.equal(run(p, ['runs']).runs[0].eventCount, 0);
+});
+
+test('reviews.json is the whole truth: a reopened event is open even if its record says fixed', () => {
+  const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z', 'fixed')]);
+  assert.equal(run(p, ['diagnose', '--id', 'evt_a']).reviewStatus, 'fixed'); // no reviews.json yet: the record decides
+  fs.writeFileSync(path.join(baseDir(p), 'reviews.json'), JSON.stringify({ items: [] }));
+  assert.equal(run(p, ['diagnose', '--id', 'evt_a']).reviewStatus, 'open');
+  assert.equal(run(p, ['list']).events[0].reviewStatus, 'open');
+  assert.equal(run(p, ['diagnose', '--last']).eventId, 'evt_a');
+});
+
+test('fixed, then seen again below the regression line: shown, still muted', () => {
+  const p = makeProject([sampleEvent('evt_a', 'gc_spike', '2026-06-25T10:00:00Z')]);
+  fs.writeFileSync(
+    path.join(baseDir(p), 'reviews.json'),
+    JSON.stringify({
+      items: [
+        {
+          id: 'evt_a',
+          status: 'fixed',
+          value: 5000,
+          markedAt: '2026-06-25T11:00:00Z',
+          seenAgainCount: 4,
+          seenAgainRun: '2026-06-25_10-00-00',
+          seenAgainValue: 1200,
+          helped: 'yes',
+        },
+      ],
+    }),
+  );
+  const d = run(p, ['diagnose', '--id', 'evt_a']);
+  assert.equal(d.reviewStatus, 'fixed');
+  assert.deepEqual(d.review, {
+    status: 'fixed',
+    markedAt: '2026-06-25T11:00:00Z',
+    fixedAtPeak: 5000,
+    seenAgainAfterFixed: { count: 4, lastRun: '2026-06-25_10-00-00', maxValue: 1200 },
+    diagnosisHelped: 'yes',
+  });
+  assert.deepEqual(run(p, ['list']).events[0].seenAgainAfterFixed, { count: 4, lastRun: '2026-06-25_10-00-00', maxValue: 1200 });
+  assert.equal(run(p, ['diagnose', '--last']).status, 'no_data');
 });

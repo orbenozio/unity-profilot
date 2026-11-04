@@ -28,7 +28,7 @@ namespace Profilot.Editor
         }
 
         [Serializable] private class Trigger { public string type; public string severity; public string metric; public double value; public double budget; }
-        [Serializable] private class Dedup { public int count; }
+        [Serializable] private class Dedup { public int count; public double peakValue; }
         [Serializable] private class Marker { public string name; }
 
         private Vector2 _scroll;
@@ -340,7 +340,7 @@ namespace Profilot.Editor
                 if (isCurrent && EditorApplication.isPlaying)
                     DrawQuiet();
                 else
-                    EditorGUILayout.LabelField("No results in this run.", EditorStyles.miniLabel);
+                    EditorGUILayout.LabelField("Clean run - nothing tripped.", EditorStyles.miniLabel);
             }
             else
             {
@@ -353,6 +353,17 @@ namespace Profilot.Editor
                     string review = ProfilotEventCapture.ReviewStatusOf(e.eventId);
                     (review == "fixed" || review == "ignored" ? muted : active).Add(e);
                 }
+
+                // What needs a look first: a fix that came back worse, then the most severe.
+                active.Sort((a, b) =>
+                {
+                    int ra = ProfilotEventCapture.ReviewStatusOf(a.eventId) == "regressed" ? 1 : 0;
+                    int rb = ProfilotEventCapture.ReviewStatusOf(b.eventId) == "regressed" ? 1 : 0;
+                    if (ra != rb) return rb - ra;
+                    int sa = SeverityRank(a.trigger?.severity), sb = SeverityRank(b.trigger?.severity);
+                    if (sa != sb) return sb - sa;
+                    return string.CompareOrdinal(b.capturedAt, a.capturedAt);
+                });
 
                 Color prev = GUI.color;
                 GUI.color = active.Count > 0 ? Orange : Green;
@@ -460,15 +471,16 @@ namespace Profilot.Editor
 
             EditorGUILayout.BeginHorizontal();
             if (GUILayout.Button(new GUIContent("Fixed",
-                    $"Mutes it. If it comes back {ProfilotEventCapture.RegressionMultiple:0}x worse than now, " +
-                    "it alerts again, marked regressed."), GUILayout.Height(20)))
-                Mark(e.eventId, "fixed", t.value);
+                    "Mark it after you applied a fix and re-ran Play. Mutes it; if it comes back " +
+                    $"{ProfilotEventCapture.RegressionMultiple:0}x worse than its peak, it alerts again, marked regressed."),
+                    GUILayout.Height(20)))
+                Mark(e.eventId, "fixed");
             if (GUILayout.Button(new GUIContent("Ignore", "Mutes it for good, as noise. Reopen to bring it back."), GUILayout.Height(20)))
-                Mark(e.eventId, "ignored", t.value);
+                Mark(e.eventId, "ignored");
             using (new EditorGUI.DisabledScope(!marked))
             {
                 if (GUILayout.Button(new GUIContent("Reopen", "Return to open and resume notifications."), GUILayout.Height(20), GUILayout.Width(70)))
-                    Mark(e.eventId, "open", 0);
+                    Mark(e.eventId, "open");
             }
             EditorGUILayout.EndHorizontal();
 
@@ -477,9 +489,21 @@ namespace Profilot.Editor
                 case "fixed":
                     double at = ProfilotEventCapture.FixedValueOf(e.eventId);
                     EditorGUILayout.LabelField(at > 0
-                            ? $"fixed - muted, alerts again at {at * ProfilotEventCapture.RegressionMultiple:0.##}"
+                            ? $"fixed at {FormatValue(t.metric, at)} - muted, alerts again at " +
+                              FormatValue(t.metric, at * ProfilotEventCapture.RegressionMultiple)
                             : "fixed - muted, alerts again if it comes back much worse",
                         EditorStyles.miniLabel);
+                    if (ProfilotEventCapture.SeenAgainAfterFixed(e.eventId, out int againCount, out string againRun, out double againValue))
+                    {
+                        prev = GUI.color;
+                        GUI.color = Orange;
+                        EditorGUILayout.LabelField(
+                            $"seen again after Fixed: {againCount}x, last in run {RunLabel(againRun)} " +
+                            $"(up to {FormatValue(t.metric, againValue)})",
+                            EditorStyles.miniBoldLabel);
+                        GUI.color = prev;
+                    }
+                    DrawHelped(e.eventId);
                     break;
                 case "ignored":
                     EditorGUILayout.LabelField("ignored - muted for good (Reopen to resume)", EditorStyles.miniLabel);
@@ -489,6 +513,7 @@ namespace Profilot.Editor
                     GUI.color = SeverityColor("high");
                     EditorGUILayout.LabelField("REGRESSED - marked fixed, came back worse", EditorStyles.miniBoldLabel);
                     GUI.color = prev;
+                    DrawHelped(e.eventId);
                     break;
             }
 
@@ -518,10 +543,61 @@ namespace Profilot.Editor
                 EditorApplication.isPlaying = true;
         }
 
-        private void Mark(string eventId, string status, double value)
+        private void Mark(string eventId, string status)
         {
-            ProfilotEventCapture.MarkReviewed(eventId, status, value);
+            ProfilotEventCapture.MarkReviewed(eventId, status);
             Repaint();
+        }
+
+        // One click on whether the diagnosis helped (SPEC.md M2), asked once a fix is marked.
+        private void DrawHelped(string eventId)
+        {
+            string helped = ProfilotEventCapture.HelpedOf(eventId);
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField(helped == "" ? "Did the diagnosis help?" : $"Diagnosis helped: {helped}", EditorStyles.miniLabel);
+            if (helped == "")
+            {
+                if (GUILayout.Button("Yes", EditorStyles.miniButtonLeft, GUILayout.Width(44)))
+                    ProfilotEventCapture.MarkHelped(eventId, true);
+                if (GUILayout.Button("No", EditorStyles.miniButtonRight, GUILayout.Width(44)))
+                    ProfilotEventCapture.MarkHelped(eventId, false);
+            }
+            EditorGUILayout.EndHorizontal();
+        }
+
+        private static int SeverityRank(string severity)
+        {
+            switch (severity)
+            {
+                case "high": return 3;
+                case "medium": return 2;
+                case "low": return 1;
+                default: return 0;
+            }
+        }
+
+        // A trigger value in the unit of its metric: "36.2 ms", "1.2 MB", "312 draw calls".
+        internal static string FormatValue(string metric, double v)
+        {
+            switch (metric)
+            {
+                case "frameTimeMs": return $"{v:0.#} ms";
+                case "gcAllocBytes":
+                    if (v >= 1024 * 1024) return $"{v / (1024 * 1024):0.#} MB";
+                    if (v >= 1024) return $"{v / 1024:0.#} KB";
+                    return $"{v:0} B";
+                case "drawCalls": return $"{v:0} draw calls";
+                default: return $"{v:0.##}";
+            }
+        }
+
+        // "2026-11-04_14-32-05" -> "Nov 4, 14:32:05"; anything else as is.
+        internal static string RunLabel(string run)
+        {
+            if (DateTime.TryParseExact(run, "yyyy-MM-dd_HH-mm-ss", System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.None, out DateTime t))
+                return t.ToString("MMM d, HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
+            return run ?? "?";
         }
 
         private static void OpenFolder()

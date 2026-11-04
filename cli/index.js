@@ -110,35 +110,94 @@ function checkRun(base, run) {
 // Before 0.7 the review buttons wrote "reviewed" / "not_a_real_issue"; the package maps them to
 // the new pair when it next saves, the CLI maps them on read so both agree meanwhile.
 const LEGACY_REVIEW = { reviewed: 'fixed', not_a_real_issue: 'ignored' };
+const mapStatus = (s) => LEGACY_REVIEW[s] || s;
 
-// Cross-run review decisions (eventId -> status), applied over the per-file value. Statuses:
-// open, fixed (muted, alerts again if it comes back much worse), regressed, ignored.
+// Cross-run review decisions, keyed by eventId. Statuses: open, fixed (muted, alerts again if it
+// comes back much worse), regressed, ignored. When reviews.json exists it is the whole truth: an
+// event missing from it is open. Reopen removes the entry, and falling back to the status baked
+// into the record then brought back "fixed" / "ignored" for an event the user had reopened.
 function reviewMap(base) {
-  const map = {};
   const p = path.join(base, 'reviews.json');
-  if (!fs.existsSync(p)) return map;
+  if (!fs.existsSync(p)) return { authoritative: false, items: {} };
   try {
-    const data = readJson(p);
-    for (const it of data.items || []) if (it && it.id) map[it.id] = LEGACY_REVIEW[it.status] || it.status;
+    const items = {};
+    for (const it of readJson(p).items || []) if (it && it.id && it.status) items[it.id] = { ...it, status: mapStatus(it.status) };
+    return { authoritative: true, items };
   } catch (_) {
     // a corrupt reviews file just means no overlay
+    return { authoritative: false, items: {} };
   }
-  return map;
 }
 
-// "stale" = the record is from a run that is not the newest one. The Unity side cannot know
-// this when it writes (it always wrote false), so the CLI decides it at read time.
-function withStale(rec, run, latestRun) {
-  if (rec && typeof rec === 'object') rec.stale = !!latestRun && run !== latestRun;
-  return rec;
+function reviewStatusOf(rec, reviews) {
+  const it = reviews.items[rec.eventId];
+  if (it) return it.status;
+  if (reviews.authoritative) return 'open';
+  return mapStatus(rec.reviewStatus) || 'open';
 }
 
-function summarize(rec, run, reviews, latestRun) {
+// The decision in full, for diagnose: when a fixed problem was marked, at what peak, and whether
+// it has been seen again since (below the regression line it stays muted, but not invisible).
+function reviewDetail(rec, reviews) {
+  const it = reviews.items[rec.eventId];
+  if (!it) return undefined;
+  const out = { status: it.status };
+  if (it.markedAt) out.markedAt = it.markedAt;
+  if (it.status === 'fixed' || it.status === 'regressed') {
+    if (it.value > 0) out.fixedAtPeak = it.value;
+    if (it.seenAgainCount > 0) {
+      out.seenAgainAfterFixed = { count: it.seenAgainCount, lastRun: it.seenAgainRun, maxValue: it.seenAgainValue };
+    }
+  }
+  if (it.helped) out.diagnosisHelped = it.helped;
+  return out;
+}
+
+// What one read needs to know about the whole store: the runs (newest first), the review
+// decisions, and in which runs each event was caught.
+function storeContext(base) {
+  const runs = listRuns(base);
+  const seenIn = new Map();
+  for (const r of runs) {
+    for (const f of runEventFiles(base, r)) {
+      const id = f.slice(0, -5);
+      if (!seenIn.has(id)) seenIn.set(id, []);
+      seenIn.get(id).push(r);
+    }
+  }
+  return { runs, newestRun: runs[0], reviews: reviewMap(base), seenIn };
+}
+
+// Recurrence is per EVENT, not per record: "is this problem still happening?" is answered by the
+// newest run that caught it. Since 0.8 every Play leaves a run folder, so a clean run counts as
+// the newest run and an event missing from it really did not come back.
+function recurrence(eventId, ctx) {
+  const seen = ctx.seenIn.get(eventId) || [];
+  const lastSeenRun = seen[0];
+  const idx = lastSeenRun ? ctx.runs.indexOf(lastSeenRun) : -1;
+  return {
+    lastSeenRun,
+    newestRun: ctx.newestRun,
+    seenInNewestRun: !!lastSeenRun && lastSeenRun === ctx.newestRun,
+    runsSeen: seen.length,
+    runsSince: idx < 0 ? undefined : idx,
+  };
+}
+
+function ageDays(capturedAt) {
+  const t = Date.parse(capturedAt);
+  return Number.isFinite(t) ? Math.round(((Date.now() - t) / 864e5) * 10) / 10 : undefined;
+}
+
+function summarize(rec, run, ctx) {
   const trigger = rec.trigger || {};
+  const rc = recurrence(rec.eventId, ctx);
+  const review = reviewDetail(rec, ctx.reviews);
   return {
     eventId: rec.eventId,
     run,
-    stale: !!latestRun && run !== latestRun,
+    stale: !rc.seenInNewestRun,
+    lastSeenRun: rc.lastSeenRun,
     type: trigger.type,
     severity: trigger.severity,
     metric: trigger.metric,
@@ -146,13 +205,24 @@ function summarize(rec, run, reviews, latestRun) {
     count: rec.dedup ? rec.dedup.count : undefined,
     topMarker: Array.isArray(rec.topMarkers) && rec.topMarkers[0] ? rec.topMarkers[0].name : undefined,
     capturedAt: rec.capturedAt,
-    reviewStatus: reviews[rec.eventId] || rec.reviewStatus || 'open',
+    reviewStatus: reviewStatusOf(rec, ctx.reviews),
+    ...(review && review.seenAgainAfterFixed ? { seenAgainAfterFixed: review.seenAgainAfterFixed } : {}),
     sessionId: rec.sessionId,
   };
 }
 
-function withReview(rec, reviews) {
-  if (rec && rec.eventId && reviews[rec.eventId]) rec.reviewStatus = reviews[rec.eventId];
+// The read-time fields of a full record: review status (and the decision behind it), recurrence,
+// stale (= not caught in the newest run) and age. The Unity side cannot know any of these when it
+// writes, so the CLI decides them.
+function annotate(rec, ctx) {
+  if (!rec || typeof rec !== 'object') return rec;
+  rec.reviewStatus = reviewStatusOf(rec, ctx.reviews);
+  const review = reviewDetail(rec, ctx.reviews);
+  if (review) rec.review = review;
+  rec.recurrence = recurrence(rec.eventId, ctx);
+  rec.stale = !rec.recurrence.seenInNewestRun;
+  const age = ageDays(rec.capturedAt);
+  if (age !== undefined) rec.ageDays = age;
   return rec;
 }
 
@@ -313,13 +383,24 @@ function runFallback(rec, resolvedRun, runs) {
 // drift. Records say which schema wrote them; the package writes meta.json on every Play; the guide
 // copy is compared with the one this CLI ships.
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 // Fields each schema added, so an older record can say exactly what it lacks instead of a field
 // silently reading as missing data.
 const SCHEMA_FIELDS = {
   2: ['writerVersion', 'frameGcAllocBytes', 'likelyCause', 'markerTreeDepth', 'capturedFrameTimeMs', 'frameMatchesTrigger'],
+  3: ['dedup.peakValue'],
 };
+
+// "a.b" reads a nested field.
+function hasField(rec, field) {
+  let cur = rec;
+  for (const k of field.split('.')) {
+    if (!cur || typeof cur !== 'object' || !(k in cur)) return false;
+    cur = cur[k];
+  }
+  return true;
+}
 
 function schemaOf(rec) {
   const n = parseInt(rec && rec.schemaVersion, 10);
@@ -343,7 +424,7 @@ function withCompat(rec) {
   }
   const missingFields = [];
   for (let v = schema + 1; v <= SCHEMA_VERSION; v++) {
-    for (const f of SCHEMA_FIELDS[v] || []) if (!(f in rec)) missingFields.push(f);
+    for (const f of SCHEMA_FIELDS[v] || []) if (!hasField(rec, f)) missingFields.push(f);
   }
   return {
     ...rec,
@@ -478,14 +559,13 @@ function cmdList(base, runFilter) {
     const bad = checkRun(base, runFilter);
     if (bad) return bad;
   }
-  const reviews = reviewMap(base);
-  const allRuns = listRuns(base);
-  const runs = runFilter ? [runFilter] : allRuns;
+  const ctx = storeContext(base);
+  const runs = runFilter ? [runFilter] : ctx.runs;
   const events = [];
   for (const r of runs) {
     for (const f of runEventFiles(base, r)) {
       try {
-        events.push(summarize(readJson(path.join(runsRoot(base), r, f)), r, reviews, allRuns[0]));
+        events.push(summarize(readJson(path.join(runsRoot(base), r, f)), r, ctx));
       } catch (_) {
         // skip a half-written or malformed file rather than failing the whole listing
       }
@@ -496,13 +576,13 @@ function cmdList(base, runFilter) {
 }
 
 // Every readable event in `runs`, as summaries plus where its file is.
-function collectEvents(base, runs, reviews, latestRun) {
+function collectEvents(base, runs, ctx) {
   const out = [];
   for (const r of runs) {
     for (const f of runEventFiles(base, r)) {
       const file = path.join(runsRoot(base), r, f);
       try {
-        out.push({ ...summarize(readJson(file), r, reviews, latestRun), file });
+        out.push({ ...summarize(readJson(file), r, ctx), file });
       } catch (_) {
         // skip a half-written or malformed file
       }
@@ -530,8 +610,9 @@ function nothingOpen(where, muted) {
   };
 }
 
-function diagnoseFile(base, file, run, runs, reviews, opts, pinned) {
-  const rec = withStale(withReview(readJson(file), reviews), run, runs[0]);
+function diagnoseFile(file, run, ctx, opts, pinned) {
+  const rec = annotate(readJson(file), ctx);
+  const runs = ctx.runs;
   // Only warn on an IMPLICIT fallback. With --run the caller chose the run, so an older one is
   // the answer they asked for, not a surprise.
   return shapeTree(withCompat(pinned ? rec : runFallback(rec, run, runs)), opts);
@@ -546,16 +627,15 @@ function cmdDiagnoseLast(base, runFilter, opts) {
     const bad = checkRun(base, runFilter);
     if (bad) return bad;
   }
-  const runs = listRuns(base);
-  const reviews = reviewMap(base);
-  const all = collectEvents(base, runFilter ? [runFilter] : runs, reviews, runs[0]);
+  const ctx = storeContext(base);
+  const all = collectEvents(base, runFilter ? [runFilter] : ctx.runs, ctx);
   if (all.length === 0) return { status: 'no_data', message: runFilter ? `No events in run ${runFilter}.` : 'No events captured yet.' };
   const active = all.filter((e) => ACTIVE.has(e.reviewStatus));
   if (active.length === 0) return nothingOpen(runFilter ? `in run ${runFilter}` : 'in any run', all);
   active.sort((a, b) => String(b.capturedAt).localeCompare(String(a.capturedAt)));
   const pick = active[0];
   try {
-    return diagnoseFile(base, pick.file, pick.run, runs, reviews, opts, !!runFilter);
+    return diagnoseFile(pick.file, pick.run, ctx, opts, !!runFilter);
   } catch (e) {
     return { status: 'error', message: `Event ${pick.eventId} is unreadable: ${e.message}` };
   }
@@ -569,11 +649,10 @@ function cmdDiagnoseWorst(base, runFilter, opts) {
     const bad = checkRun(base, runFilter);
     if (bad) return bad;
   }
-  const runs = listRuns(base);
-  const run = runFilter || runs[0];
+  const ctx = storeContext(base);
+  const run = runFilter || ctx.newestRun;
   if (!run) return { status: 'no_data', message: 'No events captured yet.' };
-  const reviews = reviewMap(base);
-  const all = collectEvents(base, [run], reviews, runs[0]);
+  const all = collectEvents(base, [run], ctx);
   const active = all.filter((e) => ACTIVE.has(e.reviewStatus));
   if (active.length === 0) return nothingOpen(`in run ${run}`, all);
   active.sort(
@@ -584,7 +663,7 @@ function cmdDiagnoseWorst(base, runFilter, opts) {
   );
   const pick = active[0];
   try {
-    return diagnoseFile(base, pick.file, pick.run, runs, reviews, opts, true);
+    return diagnoseFile(pick.file, pick.run, ctx, opts, true);
   } catch (e) {
     return { status: 'error', message: `Event ${pick.eventId} is unreadable: ${e.message}` };
   }
@@ -600,14 +679,14 @@ function cmdDiagnoseId(base, id, runFilter, opts) {
     if (bad) return bad;
   }
   const name = id.endsWith('.json') ? id : `${id}.json`;
-  const allRuns = listRuns(base);
-  const runs = runFilter ? [runFilter] : allRuns;
+  const ctx = storeContext(base);
+  const runs = runFilter ? [runFilter] : ctx.runs;
   for (const r of runs) {
     const file = path.join(runsRoot(base), r, name);
     if (!inside(runsRoot(base), file)) break;
     if (fs.existsSync(file)) {
       try {
-        return diagnoseFile(base, file, r, allRuns, reviewMap(base), opts, !!runFilter);
+        return diagnoseFile(file, r, ctx, opts, !!runFilter);
       } catch (e) {
         return { status: 'error', message: `Event ${id} is unreadable: ${e.message}` };
       }

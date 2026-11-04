@@ -37,8 +37,11 @@ namespace Profilot.PlayTests
         [UnityTest]
         public IEnumerator Tripwire_captures_a_gc_spike_event()
         {
+            // Drop earlier events but keep the run folders: entering Play already created this
+            // run's folder and run.json, which is part of what is asserted below.
             if (Directory.Exists(RunsDir))
-                Directory.Delete(RunsDir, true);
+                foreach (string old in Directory.GetFiles(RunsDir, "evt_*.json", SearchOption.AllDirectories))
+                    File.Delete(old);
 
             var go = new GameObject("Allocator");
             go.AddComponent<Allocator>();
@@ -75,11 +78,18 @@ namespace Profilot.PlayTests
             Assert.IsTrue(record.Contains("\"status\":\"ok\""), "the gc_spike record has no profiler frame");
             Assert.IsFalse(record.Contains("\"frameIndex\":-1"), "the gc_spike record has no profiler frame");
             Assert.IsTrue(record.Contains("\"frameMatchesTrigger\":true"), "the captured frame does not match the trip");
-            Assert.IsTrue(record.Contains("\"schemaVersion\":\"2\""), "the record does not carry the current schema version");
+            Assert.IsTrue(record.Contains("\"schemaVersion\":\"3\""), "the record does not carry the current schema version");
+            Assert.IsTrue(record.Contains("\"peakValue\":"), "the record does not keep the problem's peak");
+            Assert.IsFalse(record.Contains("\"stale\""), "stale is decided by the CLI, not stored");
             Assert.IsFalse(record.Contains("\"writerVersion\":\"unknown\""), "the record does not say which package wrote it");
 
             string meta = Path.Combine(Directory.GetCurrentDirectory(), "Library", "Profilot", "meta.json");
             Assert.IsTrue(File.Exists(meta), "meta.json was not written on entering Play");
+
+            // Every Play leaves a run folder with run.json, so a run that catches nothing is on
+            // record and "not seen in the newest run" means a clean run.
+            string runDir = Path.GetDirectoryName(files[0]);
+            Assert.IsTrue(File.Exists(Path.Combine(runDir, "run.json")), "run.json was not written on entering Play");
         }
     }
 }

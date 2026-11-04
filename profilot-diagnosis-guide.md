@@ -16,7 +16,8 @@ When the user asks you to diagnose a Unity performance problem (a spike, a frame
 **Live path (preferred).** The user (or you, when asked) runs:
 
 ```
-profilot diagnose --last               # the last event captured
+profilot diagnose --last               # the newest open or regressed event (the default)
+profilot diagnose --worst              # the costliest open or regressed event in the newest run
 profilot diagnose --id <eventId>       # a specific event (newest run that contains it)
 profilot diagnose --id <eventId> --run <run>      # ...from a specific run
 profilot diagnose --id <eventId> --focus <marker> # re-root the tree at this marker, its whole subtree
@@ -27,7 +28,7 @@ profilot runs                          # the runs, newest first, with event coun
 profilot status                        # run/event counts, the latest event, versions
 ```
 
-Each Play session is a "run", named by its start time (for example `2026-07-06_14-32-05`). Results are grouped by run, so you can tell which run each event came from and diagnose a specific one.
+Each Play session is a "run", named by its start time (for example `2026-07-06_14-32-05`). Results are grouped by run, so you can tell which run each event came from and diagnose a specific one. Since 0.8 every Play leaves a run folder, so a run that caught nothing shows up as a clean run (`eventCount` 0).
 
 The commands print JSON to stdout (always exit 0; an error is a `status` field inside the JSON). The main fields of an event record: `trigger` (type/severity/metric/value/budget), `counters`, `cpuTimeMs`, `frameGcAllocBytes` (GC allocation of the captured frame), `likelyCause` (a coarse hint such as `"gc_pressure"`, or empty), `markerTree` and `topMarkers`. **Important: Profilot does not capture allocation callstacks** - there is no `callstacks` field. Mapping to code goes through the marker name (see below), not a backtrace.
 
@@ -105,7 +106,7 @@ Suggested fix
 
 Next step
 Want me to apply the fix, refine it, or skip this event?
-(Once you decide, mark the event in the Profilot window: Fixed, or Ignore if it is noise)
+(After you apply a fix, re-enter Play and repeat what caused it; if it is gone, mark it Fixed in the Profilot window. Ignore is for noise.)
 ```
 
 If the diff is long, repeat the "Next step" line briefly at the end so it is not buried under the diff.
@@ -117,9 +118,10 @@ If the diff is long, repeat the "Next step" line briefly at the end so it is not
 - **Never invent data.** If a field is missing from the JSON (a counter not available on that Unity version or platform), say there is no data - do not guess a number.
 - **`compat` - a record from another Profilot version.** When it is present, `missingFields` are fields that record does not have because an older package wrote it: they are absent, not zero, so do not draw conclusions from them; mention that a fresh capture with the current package would give the full record. If `compat.note` says to update the CLI, tell the user. `profilot status` lists the CLI, package and guide versions and any `warnings` (for example an out-of-date guide - suggest `profilot init`).
 - **Watch `frameMatchesTrigger`** - `true` means the captured frame matches the trip's counters (time / allocation), so the tree describes the problem itself. `false` means no matching frame was found and the tree may describe a neighbouring frame; compare `capturedFrameTimeMs` / `frameGcAllocBytes` with `counters.*` and say so plainly instead of confidently blaming the dominant marker. `frameIndexDelta` is only the offset between Editor and Player frame numbers, not a problem.
-- **Watch `reviewStatus`** - the user's decision in the Profilot window. `open`: not triaged. `fixed`: the user marked it fixed (muted; it alerts again if it comes back 3x worse). `regressed`: marked fixed but came back worse - lead with that. `ignored`: the user marked it noise - skip it unless they ask about it.
-- **Watch `stale: true`** - an event from a run that is not the newest (the CLI computes it); say "event from an earlier run, the code may have changed since".
-- **`sessionId` = the run id.** Every entry into Play gets a new `sessionId`. `stale: false` = the newest run; `stale: true` = an earlier run in which the problem did not come back. This supports before/after for a fix: after a new run, a problem that went stale (did not come back) was probably fixed, and one that stays fresh is still happening.
+- **Watch `reviewStatus`** - the user's decision in the Profilot window. `open`: not triaged. `fixed`: the user marked it fixed (muted; it alerts again if it comes back 3x worse than its peak). `regressed`: marked fixed but came back worse - lead with that. `ignored`: the user marked it noise. `--last` and `--worst` skip fixed and ignored events; when the user names one by id, diagnose it.
+- **`review.seenAgainAfterFixed`** - a fixed problem that came back below the alert line (count, last run, largest value). Say so plainly: the fix did not fully hold, even though nothing alerted.
+- **"Is it still happening?" = `recurrence`, not the run you are reading.** `recurrence.lastSeenRun` is the newest run that caught this problem, `seenInNewestRun` says whether that is the newest run, and `runsSince` counts the runs after it. `stale: true` means exactly "not caught in the newest run". After a fix and a new run, `stale: true` (with `runsSince` >= 1) says the problem did not come back; `stale: false` says it is still happening, even when the record you are reading is from an older run. `ageDays` is how old this record is; say when it is old.
+- **`sessionId` = the run id** the record was written in.
 - Plain hyphens only, straight quotes.
 
 ## Where the data exists

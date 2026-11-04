@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- "Is it fixed?" has a real answer. Every Play now creates its run folder and `run.json` on entry,
+  so a run that catches nothing exists as a clean run. The CLI computes recurrence **per event**
+  (`recurrence.lastSeenRun`, `seenInNewestRun`, `runsSince`, `ageDays`); `stale` now means "not
+  caught in the newest run", including for a record read from an older run. Before, a clean run
+  left no folder, so a fixed problem still read as current, and a pinned older run read as fixed.
+- `reviews.json` is authoritative: an event missing from it is open. Reopen used to fall back to
+  the status baked into the record, so a reopened event stayed fixed / ignored for the CLI.
+- Fixed measures a comeback against the problem's **peak** across every run (records keep
+  `dedup.peakValue`), not the value of the card that was clicked.
+- Records are `schemaVersion` 3 (`dedup.peakValue`; `stale` is no longer stored).
+- The window sorts regressed first, then by severity, captions Fixed in the metric's unit ("fixed
+  at 4.2 MB - alerts again at 12.6 MB"), and calls an empty run a clean run.
+- The guide: mark Fixed after re-running, not right after the diagnosis; one meaning of `stale`.
 - CLI arguments are strict: an unknown option, a positional argument (`diagnose evt_x`), a missing
   value or an unknown `--run` is an error with the valid choices, never a silent fall back to the
   latest event. `--flag=value` works like `--flag value`.
@@ -20,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `profilot init` keeps an edited guide as `.bak` (timestamped if one exists) before refreshing it.
 
 ### Added
+- A fixed problem that comes back below the alert line stays muted but shows "seen again after
+  Fixed" (how often, last run, largest value) on the card and as `review.seenAgainAfterFixed` /
+  `seenAgainAfterFixed` in the CLI.
+- "Did the diagnosis help?" (Yes / No) on fixed and regressed cards, stored in `reviews.json` and
+  shown by the CLI as `review.diagnosisHelped` (SPEC metric M2).
+- EditMode tests for the review logic and the store (`Assets/Tests/Editor`).
 - `diagnose --worst`: the costliest open or regressed event of the newest run (or `--run`).
 - `profilot --help` (and bare `profilot`) prints usage; `status`, `runs` and `list` take `--text`.
 - `profilot status` warns when the store has runs but no `meta.json` (a package older than 0.7) and

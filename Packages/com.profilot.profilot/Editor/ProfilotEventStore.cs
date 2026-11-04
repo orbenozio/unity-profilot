@@ -15,11 +15,15 @@ namespace Profilot.Editor
     /// </summary>
     internal static class ProfilotEventStore
     {
-        public static string Base => Path.Combine(Directory.GetCurrentDirectory(), "Library", "Profilot");
+        public static string Base => BaseOverride ?? Path.Combine(Directory.GetCurrentDirectory(), "Library", "Profilot");
+
+        // Tests point the store at a temp folder so they never touch the project's real one.
+        internal static string BaseOverride;
         public static string RunsRoot => Path.Combine(Base, "runs");
         public static string LatestPath => Path.Combine(Base, "latest.json");
         public static string ReviewsPath => Path.Combine(Base, "reviews.json");
         public static string MetaPath => Path.Combine(Base, "meta.json");
+        public const string RunInfoFile = "run.json";
 
         // The run currently being written; set by the capture service on play start.
         public static string CurrentRun = "session";
@@ -27,6 +31,10 @@ namespace Profilot.Editor
         // Cap per run so one pathological run cannot grow without bound; dedup already keeps
         // this to the number of DISTINCT problems in the run.
         private const int MaxEventsPerRun = 200;
+
+        // Every Play now leaves a run folder, so clean runs pile up; the newest few are enough to
+        // show that a problem stopped coming back.
+        private const int MaxCleanRuns = 20;
 
         public static string RunDir(string runId) => Path.Combine(RunsRoot, runId);
         public static string EventPath(string runId, string eventId) => Path.Combine(RunDir(runId), eventId + ".json");
@@ -42,8 +50,37 @@ namespace Profilot.Editor
             PruneRun(CurrentRun);
         }
 
+        /// <summary>Creates the run's folder and run.json when Play starts. A run that catches
+        /// nothing still exists, so "not seen in the newest run" can mean "clean run" instead of
+        /// the newest run silently being an older one.</summary>
+        public static void StartRun(string runId, string runInfoJson)
+        {
+            Directory.CreateDirectory(RunDir(runId));
+            WriteAtomic(Path.Combine(RunDir(runId), RunInfoFile), runInfoJson);
+            PruneCleanRuns(runId);
+        }
+
+        public static void WriteRunInfo(string runId, string runInfoJson)
+        {
+            if (Directory.Exists(RunDir(runId)))
+                WriteAtomic(Path.Combine(RunDir(runId), RunInfoFile), runInfoJson);
+        }
+
+        // Keeps the newest MaxCleanRuns runs that caught nothing (the current one always stays).
+        private static void PruneCleanRuns(string keepRunId)
+        {
+            int clean = 0;
+            foreach (string run in ListRuns())
+            {
+                if (run == keepRunId || EventFiles(run).Count > 0)
+                    continue;
+                if (++clean > MaxCleanRuns)
+                    ClearRun(run);
+            }
+        }
+
         /// <summary>Run ids, newest first (folder names are yyyy-MM-dd_HH-mm-ss, so an ordinal
-        /// sort is chronological).</summary>
+        /// sort is chronological). Any other folder name goes last, never first.</summary>
         public static List<string> ListRuns()
         {
             var runs = new List<string>();
@@ -51,8 +88,27 @@ namespace Profilot.Editor
                 return runs;
             foreach (string d in Directory.GetDirectories(RunsRoot))
                 runs.Add(Path.GetFileName(d));
-            runs.Sort((a, b) => string.CompareOrdinal(b, a));
+            runs.Sort((a, b) =>
+            {
+                bool ta = IsRunId(a), tb = IsRunId(b);
+                return ta != tb ? (ta ? -1 : 1) : string.CompareOrdinal(b, a);
+            });
             return runs;
+        }
+
+        // yyyy-MM-dd_HH-mm-ss
+        internal static bool IsRunId(string s)
+        {
+            if (s == null || s.Length != 19)
+                return false;
+            for (int i = 0; i < s.Length; i++)
+            {
+                char c = s[i];
+                bool sep = i == 4 || i == 7 || i == 13 || i == 16;
+                if (sep ? c != '-' : i == 10 ? c != '_' : !char.IsDigit(c))
+                    return false;
+            }
+            return true;
         }
 
         public static List<string> EventFiles(string runId)
