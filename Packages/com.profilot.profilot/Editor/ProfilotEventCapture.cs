@@ -586,7 +586,7 @@ namespace Profilot.Editor
             if ((regressed || (isNewProblem && !IsMuted(eventId))) && signal.FrameCount != _lastNotifiedFrame)
             {
                 _lastNotifiedFrame = signal.FrameCount;
-                ProfilotNotifier.OnProblemCaught(eventId, signal.Type, dominantMarker, acc.Count, regressed);
+                ProfilotNotifier.OnProblemCaught(eventId, _sessionId, signal.Type, dominantMarker, acc.Count, regressed);
             }
         }
 

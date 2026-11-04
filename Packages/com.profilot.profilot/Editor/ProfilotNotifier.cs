@@ -22,37 +22,22 @@ namespace Profilot.Editor
         public static bool WindowFlash { get => EditorPrefs.GetBool(Prefix + "WindowFlash", true); set => EditorPrefs.SetBool(Prefix + "WindowFlash", value); }
         public static bool Sound { get => EditorPrefs.GetBool(Prefix + "Sound", false); set => EditorPrefs.SetBool(Prefix + "Sound", value); }
 
-        public static void OnProblemCaught(string eventId, string type, string marker, int count, bool regressed = false)
+        public static void OnProblemCaught(string eventId, string run, string type, string marker, int count, bool regressed = false)
         {
-            string headline = $"{(regressed ? "regressed " : string.Empty)}{type} · {CleanMarker(marker)} ×{count}";
+            string headline = $"{(regressed ? "Regressed: " : string.Empty)}{ProfilotText.TypeLabel(type)} in {ProfilotText.CleanMarker(marker)} x{count}";
 
-            if (Console) TryConsole(headline, eventId);
+            if (Console) TryConsole(headline, eventId, run);
             if (Toast) TryToast(headline);
             if (WindowFlash) TryWindowFlash(headline);
             if (Sound) TrySound();
         }
 
-        // The raw dominant marker is assembly-qualified and decorated
-        // (e.g. "NeonRunner.Runtime.dll!NeonRunner.UI::GameHud.OnGUI() [Invoke]"). Trim to the
-        // readable "Class.Method" tail for the notification headline.
-        private static string CleanMarker(string marker)
-        {
-            if (string.IsNullOrEmpty(marker))
-                return "(no marker)";
-
-            string s = marker.Replace("() [Invoke]", string.Empty).Replace("[Invoke]", string.Empty).Replace("()", string.Empty);
-            int colons = s.LastIndexOf("::", System.StringComparison.Ordinal);
-            if (colons >= 0) s = s.Substring(colons + 2);
-            int bang = s.LastIndexOf('!');
-            if (bang >= 0) s = s.Substring(bang + 1);
-            return s.Trim();
-        }
-
-        private static void TryConsole(string headline, string eventId)
+        private static void TryConsole(string headline, string eventId, string run)
         {
             // Editor-side (once per new problem), so there is no runtime hot-path allocation
-            // cost - the diagnose command is in the text to copy straight into Claude Code.
-            try { Debug.LogWarning($"[Profilot] caught {headline}. Diagnose: profilot diagnose --id {eventId}"); }
+            // cost - the diagnose command is in the text to copy straight into Claude Code. The
+            // same command the window's card copies, pinned to the run.
+            try { Debug.LogWarning($"[Profilot] caught {headline}. Diagnose: profilot diagnose --id {eventId} --run {run}"); }
             catch { /* best effort */ }
         }
 

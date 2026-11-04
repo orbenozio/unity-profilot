@@ -33,6 +33,8 @@ namespace Profilot.Editor
 
         private Vector2 _scroll;
         private double _lastRepaint;
+        private readonly Dictionary<string, int> _runCounts = new Dictionary<string, int>();
+        private double _runCountsAt = -10;
         private string _selectedRun;
         private ProfilotConfig _config;
 
@@ -77,12 +79,18 @@ namespace Profilot.Editor
             }
         }
 
+        // One scroll for the whole window, issues first: the caught problems used to sit below
+        // Capture and Settings, and with Settings open the Runs list fell off the bottom.
         private void OnGUI()
         {
+            _scroll = EditorGUILayout.BeginScrollView(_scroll);
             DrawHeader();
+            DrawSetupWarning();
+            DrawRunsSection();
             DrawCaptureSection();
             DrawSettingsSection();
-            DrawRunsSection();
+            DrawSetupSection();
+            EditorGUILayout.EndScrollView();
         }
 
         // ---- reusable UI helpers ------------------------------------------------------------
@@ -114,14 +122,14 @@ namespace Profilot.Editor
 
         // Icon button (built-in editor icon, theme-aware, crisp). Falls back to text if the
         // named icon is unavailable on this Unity version.
-        private static bool IconButton(string iconName, string tooltip, float width = 30f)
+        private static bool IconButton(string iconName, string tooltip, string fallbackText, float width = 30f)
         {
             GUIContent c = null;
             try { c = new GUIContent(EditorGUIUtility.IconContent(iconName)) { tooltip = tooltip }; }
             catch { /* fall through */ }
             if (c == null || c.image == null)
-                c = new GUIContent(tooltip, tooltip);
-            return GUILayout.Button(c, GUILayout.Width(width), GUILayout.Height(20));
+                c = new GUIContent(fallbackText, tooltip);
+            return GUILayout.Button(c, GUILayout.MinWidth(width), GUILayout.Height(20));
         }
 
         // ---- header + capture ---------------------------------------------------------------
@@ -130,13 +138,13 @@ namespace Profilot.Editor
         {
             EditorGUILayout.Space(4);
             EditorGUILayout.BeginHorizontal();
-            EditorGUILayout.LabelField("Profilot", EditorStyles.boldLabel);
-            GUILayout.FlexibleSpace();
             Color prev = GUI.color;
             string state = MonitorState(out Color color, out _);
             GUI.color = color;
-            GUILayout.Label(state, EditorStyles.miniLabel);
+            GUILayout.Label(state, EditorStyles.boldLabel);
             GUI.color = prev;
+            GUILayout.FlexibleSpace();
+            GUILayout.Label("v" + ProfilotEventCapture.WriterVersion, EditorStyles.miniLabel);
             EditorGUILayout.EndHorizontal();
         }
 
@@ -173,8 +181,8 @@ namespace Profilot.Editor
 
             color = Green;
             string mode = ProfilotEventCapture.DeepCapture ? string.Empty : ", counters only";
-            detail = $"Watching - baseline {tw.FrameBaselineMs:0.0} ms{mode}. No issues caught yet.";
-            return $"● watching{mode}";
+            detail = "Nothing caught yet in this run.";
+            return $"● watching - baseline {tw.FrameBaselineMs:0.0} ms{mode}";
         }
 
         private void DrawCaptureSection()
@@ -183,15 +191,16 @@ namespace Profilot.Editor
             bool deep = ProfilotEventCapture.DeepCapture;
             bool now = EditorGUILayout.ToggleLeft(
                 new GUIContent("Deep capture  (map problems to code)",
-                    "ON (default): keeps the Unity Profiler recording so a caught problem maps to " +
-                    "the exact file and line. Measured to add negligible per-frame cost.\n\n" +
+                    "ON (default): keeps the Unity Profiler recording so a caught problem names the " +
+                    "method the profiler blames, which Claude finds in your code. Measured to add " +
+                    "negligible per-frame cost.\n\n" +
                     "OFF: counter-only events (type, size, frequency) with no marker tree - maximum " +
                     "Editor speed, but you lose code mapping."),
                 deep);
             if (now != deep)
                 ProfilotEventCapture.DeepCapture = now;
             EditorGUILayout.LabelField(
-                now ? "Problems map to the exact file and line." : "Counters only - no code mapping.",
+                now ? "Problems name the method the profiler blames." : "Counters only - no code mapping.",
                 EditorStyles.miniLabel);
         }
 
@@ -265,6 +274,16 @@ namespace Profilot.Editor
                         _config.retentionDays);
                 if (EditorGUI.EndChangeCheck())
                     ProfilotConfigStore.Save(_config);
+                EditorGUILayout.Space(2);
+                if (GUILayout.Button(new GUIContent("Delete all runs...", "Deletes every captured run (asks first)."), GUILayout.Height(20)))
+                {
+                    if (EditorUtility.DisplayDialog("Profilot", "Delete ALL captured runs?", "Delete", "Cancel"))
+                    {
+                        ProfilotEventStore.ClearAll();
+                        _selectedRun = null;
+                        Repaint();
+                    }
+                }
                 EditorGUI.indentLevel--;
             }
 
@@ -290,10 +309,13 @@ namespace Profilot.Editor
             EditorGUIUtility.labelWidth = prevLabelWidth;
 
             EditorGUILayout.Space(2);
-            if (IconButtonWide("Refresh", "Reset all settings to defaults", "Reset to defaults"))
+            if (IconButtonWide("Refresh", "Reset all settings to defaults (asks first)", "Reset to defaults..."))
             {
-                _config = new ProfilotConfig();
-                ProfilotConfigStore.Save(_config);
+                if (EditorUtility.DisplayDialog("Profilot", "Reset all Profilot settings to their defaults?", "Reset", "Cancel"))
+                {
+                    _config = new ProfilotConfig();
+                    ProfilotConfigStore.Save(_config);
+                }
             }
             EditorGUI.indentLevel--;
         }
@@ -312,10 +334,6 @@ namespace Profilot.Editor
         {
             List<string> runs = ProfilotEventStore.ListRuns();
             HeaderBar("Runs", Orange);
-
-            string baseline = BaselineLine();
-            if (baseline != null)
-                EditorGUILayout.LabelField(baseline, EditorStyles.miniLabel);
 
             if (runs.Count == 0)
             {
@@ -372,7 +390,6 @@ namespace Profilot.Editor
                         : "No open issues in this run", EditorStyles.miniBoldLabel);
                 GUI.color = prev;
 
-                _scroll = EditorGUILayout.BeginScrollView(_scroll);
                 foreach (EventSummary e in active)
                     DrawEventCard(e, _selectedRun);
                 if (muted.Count > 0 && FoldoutBar("Profilot.UI.Muted", $"Muted ({muted.Count})", Dim, false))
@@ -380,7 +397,6 @@ namespace Profilot.Editor
                     foreach (EventSummary e in muted)
                         DrawEventCard(e, _selectedRun);
                 }
-                EditorGUILayout.EndScrollView();
             }
         }
 
@@ -388,8 +404,20 @@ namespace Profilot.Editor
         {
             var labels = new string[runs.Count];
             string current = ProfilotEventCapture.CurrentSessionId;
+            // Counting means listing every run folder, so it is refreshed every few seconds,
+            // not on every repaint.
+            if (EditorApplication.timeSinceStartup - _runCountsAt > 3)
+            {
+                _runCounts.Clear();
+                _runCountsAt = EditorApplication.timeSinceStartup;
+            }
             for (int i = 0; i < runs.Count; i++)
-                labels[i] = runs[i].Replace('_', ' ') + (runs[i] == current ? "   (current)" : string.Empty);
+            {
+                if (!_runCounts.TryGetValue(runs[i], out int n))
+                    _runCounts[runs[i]] = n = ProfilotEventStore.EventFiles(runs[i]).Count;
+                string count = n == 0 ? "clean" : $"{n} event{(n == 1 ? "" : "s")}";
+                labels[i] = $"{ProfilotText.RunLabel(runs[i])}   ·   {count}" + (runs[i] == current ? "   (current)" : string.Empty);
+            }
 
             int idx = Mathf.Max(0, runs.IndexOf(_selectedRun));
             EditorGUILayout.BeginHorizontal();
@@ -398,22 +426,13 @@ namespace Profilot.Editor
             if (newIdx != idx)
                 _selectedRun = runs[newIdx];
 
-            if (IconButton("Folder Icon", "Open the events folder in the file browser"))
+            if (IconButton("Folder Icon", "Open the events folder in the file browser", "Open"))
                 OpenFolder();
-            if (IconButton("TreeEditor.Trash", "Delete this run's results"))
+            if (IconButton("TreeEditor.Trash", "Delete this run's results", "Delete"))
             {
-                if (EditorUtility.DisplayDialog("Profilot", $"Delete run {_selectedRun}?", "Delete", "Cancel"))
+                if (EditorUtility.DisplayDialog("Profilot", $"Delete run {ProfilotText.RunLabel(_selectedRun)}?", "Delete", "Cancel"))
                 {
                     ProfilotEventStore.ClearRun(_selectedRun);
-                    _selectedRun = null;
-                    Repaint();
-                }
-            }
-            if (GUILayout.Button(new GUIContent("Clear all", "Delete ALL captured runs"), GUILayout.Width(66), GUILayout.Height(20)))
-            {
-                if (EditorUtility.DisplayDialog("Profilot", "Delete ALL captured runs?", "Delete", "Cancel"))
-                {
-                    ProfilotEventStore.ClearAll();
                     _selectedRun = null;
                     Repaint();
                 }
@@ -430,20 +449,20 @@ namespace Profilot.Editor
 
             Color prev = GUI.color;
             GUI.color = SeverityColor(t.severity);
-            EditorGUILayout.LabelField(new GUIContent($"{t.type}   ·   {t.severity}   ·   x{count}",
-                    "Trigger type, severity, and how many times it was seen this run (dedup count)."),
+            EditorGUILayout.LabelField(new GUIContent(
+                    $"{ProfilotText.TypeLabel(t.type)}   ·   {t.severity}   ·   seen {count} time{(count == 1 ? "" : "s")}",
+                    $"{t.type}, severity {t.severity}, caught {count} time(s) in this run."),
                 EditorStyles.boldLabel);
             GUI.color = prev;
 
-            string marker;
             if (e.topMarkers != null && e.topMarkers.Length > 0)
-                marker = e.topMarkers[0].name;
+                EditorGUILayout.LabelField(new GUIContent($"in {ProfilotText.CleanMarker(e.topMarkers[0].name)}",
+                    $"The marker the profiler blames:\n{e.topMarkers[0].name}"), EditorStyles.miniBoldLabel);
             else if (e.status == "counters_only")
-                marker = "(no marker - deep capture off; enable to map to code)";
+                EditorGUILayout.LabelField("no marker - deep capture is off; turn it on to map this to code", EditorStyles.miniLabel);
             else
-                marker = "(no marker - data may be partial)";
-            EditorGUILayout.LabelField(new GUIContent($"top: {marker}", "The dominant marker - the code Profilot blames."), EditorStyles.miniLabel);
-            EditorGUILayout.LabelField($"{t.metric} {t.value:0.##} (budget {t.budget:0.##})", EditorStyles.miniLabel);
+                EditorGUILayout.LabelField("no marker - the profiler frame was not available", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField(ProfilotText.Describe(t.type, t.metric, t.value, t.budget), EditorStyles.miniLabel);
 
             // The same event id exists in every run that hit the problem, and the CLI resolves a
             // bare --id to the newest run containing it. Always pin the run the card belongs to,
@@ -489,8 +508,8 @@ namespace Profilot.Editor
                 case "fixed":
                     double at = ProfilotEventCapture.FixedValueOf(e.eventId);
                     EditorGUILayout.LabelField(at > 0
-                            ? $"fixed at {FormatValue(t.metric, at)} - muted, alerts again at " +
-                              FormatValue(t.metric, at * ProfilotEventCapture.RegressionMultiple)
+                            ? $"fixed at {ProfilotText.FormatValue(t.metric, at)} - muted, alerts again at " +
+                              ProfilotText.FormatValue(t.metric, at * ProfilotEventCapture.RegressionMultiple)
                             : "fixed - muted, alerts again if it comes back much worse",
                         EditorStyles.miniLabel);
                     if (ProfilotEventCapture.SeenAgainAfterFixed(e.eventId, out int againCount, out string againRun, out double againValue))
@@ -498,8 +517,8 @@ namespace Profilot.Editor
                         prev = GUI.color;
                         GUI.color = Orange;
                         EditorGUILayout.LabelField(
-                            $"seen again after Fixed: {againCount}x, last in run {RunLabel(againRun)} " +
-                            $"(up to {FormatValue(t.metric, againValue)})",
+                            $"seen again after Fixed: {againCount}x, last in run {ProfilotText.RunLabel(againRun)} " +
+                            $"(up to {ProfilotText.FormatValue(t.metric, againValue)})",
                             EditorStyles.miniBoldLabel);
                         GUI.color = prev;
                     }
@@ -536,11 +555,79 @@ namespace Profilot.Editor
         {
             EditorGUILayout.Space(8);
             EditorGUILayout.HelpBox(
-                "No runs captured yet. Enter Play Mode and Profilot will watch for performance " +
-                "spikes on its own. Results are grouped by run.",
+                "No runs yet. Enter Play Mode and Profilot watches for performance spikes on its own. " +
+                "Then ask Claude Code to \"diagnose the last Profilot event\".",
                 MessageType.Info);
+            DrawChecklist(ProfilotHealth.Get());
+            EditorGUILayout.Space(4);
             if (GUILayout.Button("Enter Play Mode", GUILayout.Height(26)))
                 EditorApplication.isPlaying = true;
+        }
+
+        // ---- setup / health -----------------------------------------------------------------
+
+        // Only when something is wrong, and above the issues, so drift is seen where people look.
+        private void DrawSetupWarning()
+        {
+            ProfilotHealth.Report h = ProfilotHealth.Get();
+            if (h.Healthy || h.Checking || ProfilotEventStore.ListRuns().Count == 0)
+                return;
+            string what = !h.CliFound ? "The profilot CLI was not found."
+                : h.VersionsDrift ? $"CLI {h.CliVersion} and package {h.PackageVersion} differ."
+                : h.GuideState != "current" ? $"The guide for Claude Code is {h.GuideState}."
+                : "CLAUDE.md does not import the Profilot guide.";
+            EditorGUILayout.HelpBox(what + " See Setup at the bottom of this window.", MessageType.Warning);
+        }
+
+        private void DrawSetupSection()
+        {
+            ProfilotHealth.Report h = ProfilotHealth.Get();
+            if (!FoldoutBar("Profilot.UI.Setup", h.Healthy ? "Setup" : "Setup  (needs attention)", h.Healthy ? Dim : Orange, !h.Healthy))
+                return;
+            EditorGUI.indentLevel++;
+            DrawChecklist(h);
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button(new GUIContent("Re-check", "Look for the CLI and the guide again."), GUILayout.Height(20)))
+                ProfilotHealth.Get(true);
+            EditorGUILayout.EndHorizontal();
+            EditorGUI.indentLevel--;
+        }
+
+        private void DrawChecklist(ProfilotHealth.Report h)
+        {
+            if (h.Checking)
+            {
+                EditorGUILayout.LabelField("Checking the CLI and the guide...", EditorStyles.miniLabel);
+                return;
+            }
+            Line(true, $"Unity package {h.PackageVersion}");
+            Line(h.CliFound, h.CliFound ? $"profilot CLI {h.CliVersion}" : "profilot CLI not found on the PATH");
+            if (h.VersionsDrift)
+                Line(false, $"CLI {h.CliVersion} and package {h.PackageVersion} differ - update the older one");
+            Line(h.GuideState == "current", h.GuideState == "current"
+                ? "Guide for Claude Code in .claude/"
+                : h.GuideState == "missing" ? "No guide in .claude/ - run profilot init" : "The guide in .claude/ is outdated - run profilot init");
+            Line(h.ClaudeMdImports, h.ClaudeMdImports ? "CLAUDE.md imports the guide" : "CLAUDE.md does not import the guide - run profilot init");
+
+            if (!h.Healthy)
+            {
+                EditorGUILayout.BeginHorizontal();
+                EditorGUILayout.SelectableLabel(ProfilotHealth.SetupCommand, EditorStyles.textField, GUILayout.Height(18));
+                if (GUILayout.Button(new GUIContent("Copy", "Run it in a terminal, in this project's folder."), GUILayout.Width(52), GUILayout.Height(18)))
+                {
+                    EditorGUIUtility.systemCopyBuffer = ProfilotHealth.SetupCommand;
+                    ShowNotification(new GUIContent("Setup command copied"));
+                }
+                EditorGUILayout.EndHorizontal();
+            }
+        }
+
+        private static void Line(bool ok, string text)
+        {
+            Color prev = GUI.color;
+            GUI.color = ok ? Green : Orange;
+            EditorGUILayout.LabelField((ok ? "✓  " : "✗  ") + text, EditorStyles.miniLabel);
+            GUI.color = prev;
         }
 
         private void Mark(string eventId, string status)
@@ -576,30 +663,6 @@ namespace Profilot.Editor
             }
         }
 
-        // A trigger value in the unit of its metric: "36.2 ms", "1.2 MB", "312 draw calls".
-        internal static string FormatValue(string metric, double v)
-        {
-            switch (metric)
-            {
-                case "frameTimeMs": return $"{v:0.#} ms";
-                case "gcAllocBytes":
-                    if (v >= 1024 * 1024) return $"{v / (1024 * 1024):0.#} MB";
-                    if (v >= 1024) return $"{v / 1024:0.#} KB";
-                    return $"{v:0} B";
-                case "drawCalls": return $"{v:0} draw calls";
-                default: return $"{v:0.##}";
-            }
-        }
-
-        // "2026-11-04_14-32-05" -> "Nov 4, 14:32:05"; anything else as is.
-        internal static string RunLabel(string run)
-        {
-            if (DateTime.TryParseExact(run, "yyyy-MM-dd_HH-mm-ss", System.Globalization.CultureInfo.InvariantCulture,
-                    System.Globalization.DateTimeStyles.None, out DateTime t))
-                return t.ToString("MMM d, HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
-            return run ?? "?";
-        }
-
         private static void OpenFolder()
         {
             string dir = ProfilotEventStore.RunsRoot;
@@ -613,16 +676,6 @@ namespace Profilot.Editor
             // (which includes hidden objects) is the way to reach it.
             var all = Resources.FindObjectsOfTypeAll<ProfilotTripwire>();
             return all.Length > 0 ? all[0] : null;
-        }
-
-        // Compact live baseline (or null when not playing / not warm yet).
-        private static string BaselineLine()
-        {
-            ProfilotTripwire tw = EditorApplication.isPlaying ? FindTripwire() : null;
-            if (tw == null || !tw.FrameBaselineReady)
-                return null;
-            string dc = tw.DrawCallsBaselineReady ? $"  ·  draw calls {tw.DrawCallsBaseline:0}" : string.Empty;
-            return $"baseline: frame {tw.FrameBaselineMs:0.0} ms{dc}";
         }
 
         // Detailed baseline readout with the derived trip thresholds, shown under Thresholds.

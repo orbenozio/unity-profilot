@@ -17,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed measures a comeback against the problem's **peak** across every run (records keep
   `dedup.peakValue`), not the value of the card that was clicked.
 - Records are `schemaVersion` 3 (`dedup.peakValue`; `stale` is no longer stored).
+- The window is one scroll with the caught issues first (Capture, Settings and Setup below), so the
+  list no longer falls off the bottom when Settings is open.
+- Event cards read in plain language: "Frame hitch - high - seen 9 times", "in
+  GarbageGenerator.Update" (full marker in the tooltip), "Allocated 1.2 MB in one frame" / "Frame
+  took 48 ms (trips above 18 ms)".
+- The run picker shows "Nov 4, 14:32:05 - 3 events" or "clean"; the header shows the state with the
+  baseline and the package version instead of repeating the window title.
+- "Reset to defaults" asks first; "Delete all runs" moved under Settings > Retention, away from the
+  per-run delete; icon buttons fall back to short text, not their tooltip.
+- The Deep capture text no longer promises "the exact file and line".
+- The Console notification carries the same pinned command as the card (`--run`).
 - The window sorts regressed first, then by severity, captions Fixed in the metric's unit ("fixed
   at 4.2 MB - alerts again at 12.6 MB"), and calls an empty run a clean run.
 - The guide: mark Fixed after re-running, not right after the diagnosis; one meaning of `stale`.
@@ -33,6 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `profilot init` keeps an edited guide as `.bak` (timestamped if one exists) before refreshing it.
 
 ### Added
+- Window **Setup** panel: the package version, whether the `profilot` CLI is on the PATH (and its
+  version), whether `.claude/` has a current guide and CLAUDE.md imports it, with a copyable setup
+  command. When something is off and there are runs, a warning sits above the issues. The same
+  checklist shows on first run.
 - A fixed problem that comes back below the alert line stays muted but shows "seen again after
   Fixed" (how often, last run, largest value) on the card and as `review.seenAgainAfterFixed` /
   `seenAgainAfterFixed` in the CLI.
